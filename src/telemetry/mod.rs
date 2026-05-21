@@ -94,10 +94,7 @@ impl TelemetryConfig {
     fn init_with_otel(&self) -> Result<(), KovaError> {
         use opentelemetry::trace::TracerProvider as _;
         use opentelemetry_otlp::WithExportConfig;
-        use opentelemetry_sdk::{
-            runtime,
-            trace::{Sampler, TracerProvider},
-        };
+        use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
         use tracing_opentelemetry::OpenTelemetryLayer;
         use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -112,8 +109,8 @@ impl TelemetryConfig {
         let provider = match &self.exporter {
             ExporterConfig::Stdout => {
                 let exporter = opentelemetry_stdout::SpanExporter::default();
-                TracerProvider::builder()
-                    .with_batch_exporter(exporter, runtime::Tokio)
+                SdkTracerProvider::builder()
+                    .with_batch_exporter(exporter)
                     .with_sampler(sampler)
                     .build()
             }
@@ -130,8 +127,8 @@ impl TelemetryConfig {
                         .build()
                         .map_err(|e| KovaError::Build(format!("OTLP HTTP exporter error: {e}")))?,
                 };
-                TracerProvider::builder()
-                    .with_batch_exporter(exporter, runtime::Tokio)
+                SdkTracerProvider::builder()
+                    .with_batch_exporter(exporter)
                     .with_sampler(sampler)
                     .build()
             }
@@ -142,8 +139,8 @@ impl TelemetryConfig {
                     .with_endpoint(endpoint)
                     .build()
                     .map_err(|e| KovaError::Build(format!("Jaeger exporter error: {e}")))?;
-                TracerProvider::builder()
-                    .with_batch_exporter(exporter, runtime::Tokio)
+                SdkTracerProvider::builder()
+                    .with_batch_exporter(exporter)
                     .with_sampler(sampler)
                     .build()
             }
