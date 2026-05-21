@@ -6,7 +6,7 @@ use kova::agent::AgentBuilder;
 use kova::error::KovaError;
 use kova::models::*;
 
-use mock::provider::{make_text_response, MockLlmProvider};
+use mock::provider::{MockLlmProvider, make_text_response};
 
 // ── Basic chat loop ────────────────────────────────────────────────
 
@@ -73,10 +73,7 @@ async fn agent_chat_empty_content_returns_empty_string() {
 
     let provider = Arc::new(MockLlmProvider::with_response(resp));
 
-    let agent = AgentBuilder::new()
-        .provider(provider)
-        .build()
-        .unwrap();
+    let agent = AgentBuilder::new().provider(provider).build().unwrap();
 
     let reply = agent.chat("conv-1", "hello").await.unwrap();
     assert_eq!(reply, "");

@@ -1,10 +1,10 @@
 use aws_smithy_types::event_stream::Message;
 use serde::Deserialize;
 
-use crate::error::KovaError;
 use super::types::{
     BedrockContentBlockDelta, BedrockContentBlockStart, BedrockStreamEvent, BedrockUsage,
 };
+use crate::error::KovaError;
 
 // ── Event stream intermediate payload types ────────────────────────
 // Bedrock sends each event type as a separate JSON object keyed by the
@@ -65,47 +65,41 @@ pub(super) fn parse_event_stream_frame(
 
     match event_type_str.as_str() {
         "contentBlockStart" => {
-            let p: ContentBlockStartPayload =
-                serde_json::from_slice(payload).map_err(|e| {
-                    KovaError::Stream(format!(
-                        "Failed to deserialize contentBlockStart payload: {e}"
-                    ))
-                })?;
+            let p: ContentBlockStartPayload = serde_json::from_slice(payload).map_err(|e| {
+                KovaError::Stream(format!(
+                    "Failed to deserialize contentBlockStart payload: {e}"
+                ))
+            })?;
             Ok(Some(BedrockStreamEvent::ContentBlockStart {
                 content_block_index: p.content_block_index,
                 start: p.start,
             }))
         }
         "contentBlockDelta" => {
-            let p: ContentBlockDeltaPayload =
-                serde_json::from_slice(payload).map_err(|e| {
-                    KovaError::Stream(format!(
-                        "Failed to deserialize contentBlockDelta payload: {e}"
-                    ))
-                })?;
+            let p: ContentBlockDeltaPayload = serde_json::from_slice(payload).map_err(|e| {
+                KovaError::Stream(format!(
+                    "Failed to deserialize contentBlockDelta payload: {e}"
+                ))
+            })?;
             Ok(Some(BedrockStreamEvent::ContentBlockDelta {
                 content_block_index: p.content_block_index,
                 delta: p.delta,
             }))
         }
         "contentBlockStop" => {
-            let p: ContentBlockStopPayload =
-                serde_json::from_slice(payload).map_err(|e| {
-                    KovaError::Stream(format!(
-                        "Failed to deserialize contentBlockStop payload: {e}"
-                    ))
-                })?;
+            let p: ContentBlockStopPayload = serde_json::from_slice(payload).map_err(|e| {
+                KovaError::Stream(format!(
+                    "Failed to deserialize contentBlockStop payload: {e}"
+                ))
+            })?;
             Ok(Some(BedrockStreamEvent::ContentBlockStop {
                 content_block_index: p.content_block_index,
             }))
         }
         "messageStop" => {
-            let p: MessageStopPayload =
-                serde_json::from_slice(payload).map_err(|e| {
-                    KovaError::Stream(format!(
-                        "Failed to deserialize messageStop payload: {e}"
-                    ))
-                })?;
+            let p: MessageStopPayload = serde_json::from_slice(payload).map_err(|e| {
+                KovaError::Stream(format!("Failed to deserialize messageStop payload: {e}"))
+            })?;
             Ok(Some(BedrockStreamEvent::MessageStop {
                 stop_reason: p.stop_reason,
             }))
@@ -218,7 +212,9 @@ mod tests {
         let msg = make_event_message("contentBlockStop", &payload);
         let event = parse_event_stream_frame(&msg).unwrap().unwrap();
         match event {
-            BedrockStreamEvent::ContentBlockStop { content_block_index } => {
+            BedrockStreamEvent::ContentBlockStop {
+                content_block_index,
+            } => {
                 assert_eq!(content_block_index, 2)
             }
             other => panic!("Expected ContentBlockStop, got: {:?}", other),

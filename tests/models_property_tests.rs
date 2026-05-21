@@ -31,21 +31,21 @@ fn arb_content_block() -> impl Strategy<Value = ContentBlock> {
             Just(serde_json::json!({"key": "value"})),
         )
             .prop_map(|(id, name, input)| ContentBlock::ToolUse { id, name, input }),
-        (
-            "[a-z0-9_]{1,20}",
-            "[a-zA-Z0-9 ]{0,50}",
-            any::<bool>(),
-        )
-            .prop_map(|(tool_use_id, content, is_error)| ContentBlock::ToolResult {
+        ("[a-z0-9_]{1,20}", "[a-zA-Z0-9 ]{0,50}", any::<bool>(),).prop_map(
+            |(tool_use_id, content, is_error)| ContentBlock::ToolResult {
                 tool_use_id,
                 content,
                 is_error,
-            }),
+            }
+        ),
     ]
 }
 
 fn arb_conversation_message() -> impl Strategy<Value = ConversationMessage> {
-    (arb_role(), proptest::collection::vec(arb_content_block(), 1..4))
+    (
+        arb_role(),
+        proptest::collection::vec(arb_content_block(), 1..4),
+    )
         .prop_map(|(role, content)| ConversationMessage { role, content })
 }
 
@@ -110,10 +110,8 @@ fn arb_stream_event() -> impl Strategy<Value = StreamEvent> {
 }
 
 fn arb_tool_result() -> impl Strategy<Value = ToolResult> {
-    ("[a-zA-Z0-9 ]{0,50}", any::<bool>()).prop_map(|(content, is_error)| ToolResult {
-        content,
-        is_error,
-    })
+    ("[a-zA-Z0-9 ]{0,50}", any::<bool>())
+        .prop_map(|(content, is_error)| ToolResult { content, is_error })
 }
 
 fn arb_model_info() -> impl Strategy<Value = ModelInfo> {

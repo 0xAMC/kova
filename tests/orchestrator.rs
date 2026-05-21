@@ -8,7 +8,7 @@ use kova::agent::{Agent, AgentBuilder};
 use kova::error::KovaError;
 use kova::orchestrator::{Orchestrator, OrchestratorOutput, OrchestratorPattern};
 
-use mock::provider::{make_text_response, MockLlmProvider};
+use mock::provider::{MockLlmProvider, make_text_response};
 
 /// Build a simple agent that always returns the given text.
 fn build_agent(text: &str) -> Arc<Agent> {
@@ -57,11 +57,7 @@ impl kova::provider::LlmProvider for FailingMockProvider {
         _config: &kova::models::InferenceConfig,
     ) -> Result<
         std::pin::Pin<
-            Box<
-                dyn futures::Stream<
-                        Item = Result<kova::models::StreamEvent, KovaError>,
-                    > + Send,
-            >,
+            Box<dyn futures::Stream<Item = Result<kova::models::StreamEvent, KovaError>> + Send>,
         >,
         KovaError,
     > {
@@ -98,11 +94,7 @@ impl kova::provider::LlmProvider for SlowMockProvider {
         _config: &kova::models::InferenceConfig,
     ) -> Result<
         std::pin::Pin<
-            Box<
-                dyn futures::Stream<
-                        Item = Result<kova::models::StreamEvent, KovaError>,
-                    > + Send,
-            >,
+            Box<dyn futures::Stream<Item = Result<kova::models::StreamEvent, KovaError>> + Send>,
         >,
         KovaError,
     > {
@@ -113,7 +105,6 @@ impl kova::provider::LlmProvider for SlowMockProvider {
         Ok(vec![])
     }
 }
-
 
 // ── Sequential pipeline ────────────────────────────────────────────
 
@@ -171,8 +162,7 @@ async fn parallel_execution_all_receive_same_input() {
             assert_eq!(par.successes.len(), 3, "all 3 agents should succeed");
 
             // Verify all agents produced their expected outputs.
-            let mut outputs: Vec<String> =
-                par.successes.iter().map(|(_, v)| v.clone()).collect();
+            let mut outputs: Vec<String> = par.successes.iter().map(|(_, v)| v.clone()).collect();
             outputs.sort();
             assert_eq!(outputs, vec!["reply-a", "reply-b", "reply-c"]);
         }

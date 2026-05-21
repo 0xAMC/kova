@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use crate::memory::in_memory::InMemoryStore;
     use crate::memory::MemoryStore;
+    use crate::memory::in_memory::InMemoryStore;
     use crate::models::{ContentBlock, ConversationMessage, Role};
 
     fn msg(role: Role, text: &str) -> ConversationMessage {
@@ -68,7 +68,6 @@ mod tests {
         assert_eq!(texts, vec!["first", "second", "third"]);
     }
 
-
     #[tokio::test]
     async fn separate_conversations_are_isolated() {
         let store = InMemoryStore::new();
@@ -90,10 +89,7 @@ mod tests {
     #[tokio::test]
     async fn clear_removes_all_messages() {
         let store = InMemoryStore::new();
-        store
-            .add_message("c1", msg(Role::User, "a"))
-            .await
-            .unwrap();
+        store.add_message("c1", msg(Role::User, "a")).await.unwrap();
         store
             .add_message("c1", msg(Role::Assistant, "b"))
             .await

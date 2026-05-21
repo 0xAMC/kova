@@ -4,14 +4,14 @@ use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
 
+use super::config::OpenAiProviderConfig;
+use super::convert::{format_request, format_response, sse_byte_stream_to_events};
+use super::types::{OaiChatCompletionResponse, OaiModelListResponse};
 use crate::error::KovaError;
 use crate::models::{
     ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, StreamEvent, ToolDefinition,
 };
 use crate::provider::LlmProvider;
-use super::config::OpenAiProviderConfig;
-use super::convert::{format_request, format_response, sse_byte_stream_to_events};
-use super::types::{OaiChatCompletionResponse, OaiModelListResponse};
 use crate::provider::http::map_request_error;
 
 pub struct OpenAiCompatibleProvider {
@@ -92,16 +92,15 @@ impl LlmProvider for OpenAiCompatibleProvider {
             return Err(err);
         }
 
-        let oai_response: OaiChatCompletionResponse =
-            response.json().await.map_err(|e| {
-                let err = KovaError::Provider {
-                    message: format!("Failed to deserialize response: {e}"),
-                    status_code: None,
-                };
-                tracing::Span::current().record("otel.status_code", "ERROR");
-                tracing::warn!(error = %err, "Failed to deserialize LLM response");
-                err
-            })?;
+        let oai_response: OaiChatCompletionResponse = response.json().await.map_err(|e| {
+            let err = KovaError::Provider {
+                message: format!("Failed to deserialize response: {e}"),
+                status_code: None,
+            };
+            tracing::Span::current().record("otel.status_code", "ERROR");
+            tracing::warn!(error = %err, "Failed to deserialize LLM response");
+            err
+        })?;
 
         let latency_ms = start.elapsed().as_millis() as u64;
         if let Some(ref usage) = oai_response.usage {
@@ -118,8 +117,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         messages: &[ConversationMessage],
         tools: &[ToolDefinition],
         config: &InferenceConfig,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         let model_name = config.model.as_deref().unwrap_or(&self.config.model);
         let span = tracing::info_span!(
             "llm.chat_completion_stream",
@@ -213,10 +211,10 @@ impl LlmProvider for OpenAiCompatibleProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{ContentBlock, Role};
     use serde_json::json;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-    use crate::models::{ContentBlock, Role};
 
     fn sample_messages() -> Vec<ConversationMessage> {
         vec![ConversationMessage {
@@ -293,8 +291,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
+        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
         let resp = provider
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await;
@@ -310,8 +307,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
+        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
         let err = provider
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
@@ -334,8 +330,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
+        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
         let err = provider
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
@@ -358,8 +353,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
+        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
         let err = provider
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
@@ -407,8 +401,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let provider =
-            OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
+        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
         let err = provider.list_models().await.unwrap_err();
         match err {
             KovaError::Provider {

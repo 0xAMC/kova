@@ -7,7 +7,7 @@ use kova::agent::AgentBuilder;
 use kova::models::*;
 
 use mock::provider::{
-    make_text_response, make_tool_call_response, CapturingMockProvider, MockLlmProvider,
+    CapturingMockProvider, MockLlmProvider, make_text_response, make_tool_call_response,
 };
 use mock::tool::MockTool;
 

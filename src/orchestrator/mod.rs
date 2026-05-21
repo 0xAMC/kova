@@ -93,10 +93,7 @@ impl Orchestrator {
             OrchestratorPattern::Router {
                 router_agent,
                 downstream,
-            } => {
-                self.execute_router(&router_agent, &downstream, input)
-                    .await
-            }
+            } => self.execute_router(&router_agent, &downstream, input).await,
         }
     }
 
@@ -152,10 +149,7 @@ impl Orchestrator {
         // Validate all agents exist before spawning.
         let agents: Vec<(String, Arc<Agent>)> = agent_names
             .iter()
-            .map(|name| {
-                self.get_agent(name)
-                    .map(|a| (name.clone(), Arc::clone(a)))
-            })
+            .map(|name| self.get_agent(name).map(|a| (name.clone(), Arc::clone(a))))
             .collect::<Result<Vec<_>, _>>()?;
 
         let mut handles = Vec::with_capacity(agents.len());
@@ -208,12 +202,9 @@ impl Orchestrator {
         let conv_id = format!("orch-router-{}", router_name);
 
         // The router agent's response should be the name of a downstream agent.
-        let selected_name = router
-            .chat(&conv_id, input)
-            .await
-            .map_err(|e| {
-                KovaError::Orchestration(format!("Router agent '{}' failed: {}", router_name, e))
-            })?;
+        let selected_name = router.chat(&conv_id, input).await.map_err(|e| {
+            KovaError::Orchestration(format!("Router agent '{}' failed: {}", router_name, e))
+        })?;
 
         let selected_name = selected_name.trim().to_string();
 
@@ -227,15 +218,12 @@ impl Orchestrator {
 
         let agent = self.get_agent(&selected_name)?;
         let downstream_conv_id = format!("orch-routed-{}", selected_name);
-        let output = agent
-            .chat(&downstream_conv_id, input)
-            .await
-            .map_err(|e| {
-                KovaError::Orchestration(format!(
-                    "Downstream agent '{}' failed: {}",
-                    selected_name, e
-                ))
-            })?;
+        let output = agent.chat(&downstream_conv_id, input).await.map_err(|e| {
+            KovaError::Orchestration(format!(
+                "Downstream agent '{}' failed: {}",
+                selected_name, e
+            ))
+        })?;
 
         Ok(OrchestratorOutput::Single(output))
     }

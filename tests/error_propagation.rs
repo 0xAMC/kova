@@ -74,8 +74,7 @@ impl LlmProvider for FailingProvider {
         _messages: &[ConversationMessage],
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         Err(KovaError::Stream("not implemented".into()))
     }
 
@@ -125,8 +124,7 @@ impl LlmProvider for ToolCallThenTextProvider {
         _messages: &[ConversationMessage],
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         Err(KovaError::Stream("not implemented".into()))
     }
 

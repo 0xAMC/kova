@@ -196,7 +196,10 @@ mod tests {
 
         assert!(registry.get("alpha").await.is_some());
         assert!(registry.get("beta").await.is_some());
-        assert_eq!(registry.get("alpha").await.unwrap().description(), "tool alpha");
+        assert_eq!(
+            registry.get("alpha").await.unwrap().description(),
+            "tool alpha"
+        );
 
         let mut names = registry.list().await;
         names.sort();
@@ -211,10 +214,7 @@ mod tests {
 
     #[tokio::test]
     async fn from_tools_last_wins_on_duplicate() {
-        let tools = vec![
-            make_tool("dup", "first"),
-            make_tool("dup", "second"),
-        ];
+        let tools = vec![make_tool("dup", "first"), make_tool("dup", "second")];
         let registry = ToolRegistry::from_tools(tools);
 
         let tool = registry.get("dup").await.unwrap();

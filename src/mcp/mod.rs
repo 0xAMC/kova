@@ -13,14 +13,9 @@ use crate::error::KovaError;
 #[derive(Debug, Clone)]
 pub enum McpTransport {
     /// Spawn a child process and communicate via stdin/stdout.
-    Stdio {
-        command: String,
-        args: Vec<String>,
-    },
+    Stdio { command: String, args: Vec<String> },
     /// Connect to an MCP server over HTTP+SSE (URL endpoint).
-    HttpSse {
-        url: String,
-    },
+    HttpSse { url: String },
 }
 
 /// A tool definition as returned by the MCP `tools/list` method.
@@ -130,10 +125,7 @@ impl McpClient {
                     .stderr(std::process::Stdio::null())
                     .spawn()
                     .map_err(|e| {
-                        KovaError::Mcp(format!(
-                            "Failed to spawn MCP process '{}': {}",
-                            command, e
-                        ))
+                        KovaError::Mcp(format!("Failed to spawn MCP process '{}': {}", command, e))
                     })?;
 
                 let stdin = child.stdin.take().ok_or_else(|| {
@@ -177,9 +169,8 @@ impl McpClient {
         let mut conn = self.connection.lock().await;
         let response = Self::send_request(&mut conn, "tools/list", None).await?;
 
-        let result: ToolsListResult = serde_json::from_value(response).map_err(|e| {
-            KovaError::Mcp(format!("Failed to parse tools/list response: {}", e))
-        })?;
+        let result: ToolsListResult = serde_json::from_value(response)
+            .map_err(|e| KovaError::Mcp(format!("Failed to parse tools/list response: {}", e)))?;
 
         Ok(result.tools)
     }
@@ -199,9 +190,8 @@ impl McpClient {
 
         let response = Self::send_request(&mut conn, "tools/call", Some(params)).await?;
 
-        let result: McpCallResult = serde_json::from_value(response).map_err(|e| {
-            KovaError::Mcp(format!("Failed to parse tools/call response: {}", e))
-        })?;
+        let result: McpCallResult = serde_json::from_value(response)
+            .map_err(|e| KovaError::Mcp(format!("Failed to parse tools/call response: {}", e)))?;
 
         let text = result
             .content
@@ -221,12 +211,8 @@ impl McpClient {
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value, KovaError> {
         match conn {
-            McpConnection::Stdio(stdio) => {
-                Self::send_stdio_request(stdio, method, params).await
-            }
-            McpConnection::Http(http) => {
-                Self::send_http_request(http, method, params).await
-            }
+            McpConnection::Stdio(stdio) => Self::send_stdio_request(stdio, method, params).await,
+            McpConnection::Http(http) => Self::send_http_request(http, method, params).await,
         }
     }
 
@@ -248,16 +234,17 @@ impl McpClient {
             "jsonrpc": "2.0",
             "method": "notifications/initialized"
         });
-        let mut line = serde_json::to_string(&notification).map_err(|e| {
-            KovaError::Mcp(format!("Failed to serialize notification: {}", e))
-        })?;
+        let mut line = serde_json::to_string(&notification)
+            .map_err(|e| KovaError::Mcp(format!("Failed to serialize notification: {}", e)))?;
         line.push('\n');
-        conn.stdin.write_all(line.as_bytes()).await.map_err(|e| {
-            KovaError::Mcp(format!("Failed to write notification: {}", e))
-        })?;
-        conn.stdin.flush().await.map_err(|e| {
-            KovaError::Mcp(format!("Failed to flush notification: {}", e))
-        })?;
+        conn.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| KovaError::Mcp(format!("Failed to write notification: {}", e)))?;
+        conn.stdin
+            .flush()
+            .await
+            .map_err(|e| KovaError::Mcp(format!("Failed to flush notification: {}", e)))?;
 
         Ok(())
     }
@@ -278,17 +265,18 @@ impl McpClient {
             params,
         };
 
-        let mut line = serde_json::to_string(&request).map_err(|e| {
-            KovaError::Mcp(format!("Failed to serialize request: {}", e))
-        })?;
+        let mut line = serde_json::to_string(&request)
+            .map_err(|e| KovaError::Mcp(format!("Failed to serialize request: {}", e)))?;
         line.push('\n');
 
-        conn.stdin.write_all(line.as_bytes()).await.map_err(|e| {
-            KovaError::Mcp(format!("Failed to write to MCP process stdin: {}", e))
-        })?;
-        conn.stdin.flush().await.map_err(|e| {
-            KovaError::Mcp(format!("Failed to flush MCP process stdin: {}", e))
-        })?;
+        conn.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| KovaError::Mcp(format!("Failed to write to MCP process stdin: {}", e)))?;
+        conn.stdin
+            .flush()
+            .await
+            .map_err(|e| KovaError::Mcp(format!("Failed to flush MCP process stdin: {}", e)))?;
 
         // Read lines until we get a valid JSON-RPC response with our id.
         let mut buf = String::new();
@@ -313,14 +301,11 @@ impl McpClient {
             if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
                 if resp.id == Some(id) {
                     if let Some(err) = resp.error {
-                        return Err(KovaError::Mcp(format!(
-                            "MCP error: {}",
-                            err.message
-                        )));
+                        return Err(KovaError::Mcp(format!("MCP error: {}", err.message)));
                     }
-                    return resp.result.ok_or_else(|| {
-                        KovaError::Mcp("MCP response missing result".into())
-                    });
+                    return resp
+                        .result
+                        .ok_or_else(|| KovaError::Mcp("MCP response missing result".into()));
                 }
                 // Response for a different id (e.g. notification) — skip.
             }
@@ -350,9 +335,7 @@ impl McpClient {
             .json(&request)
             .send()
             .await
-            .map_err(|e| {
-                KovaError::Mcp(format!("HTTP request to MCP server failed: {}", e))
-            })?;
+            .map_err(|e| KovaError::Mcp(format!("HTTP request to MCP server failed: {}", e)))?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -363,17 +346,18 @@ impl McpClient {
             )));
         }
 
-        let rpc_resp: JsonRpcResponse = resp.json().await.map_err(|e| {
-            KovaError::Mcp(format!("Failed to parse MCP HTTP response: {}", e))
-        })?;
+        let rpc_resp: JsonRpcResponse = resp
+            .json()
+            .await
+            .map_err(|e| KovaError::Mcp(format!("Failed to parse MCP HTTP response: {}", e)))?;
 
         if let Some(err) = rpc_resp.error {
             return Err(KovaError::Mcp(format!("MCP error: {}", err.message)));
         }
 
-        rpc_resp.result.ok_or_else(|| {
-            KovaError::Mcp("MCP response missing result".into())
-        })
+        rpc_resp
+            .result
+            .ok_or_else(|| KovaError::Mcp("MCP response missing result".into()))
     }
 
     /// Create a dummy `McpClient` for testing purposes.
@@ -491,7 +475,8 @@ mod tests {
 
     #[test]
     fn jsonrpc_error_response_parsing() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(resp.error.is_some());
         assert_eq!(resp.error.unwrap().message, "Method not found");

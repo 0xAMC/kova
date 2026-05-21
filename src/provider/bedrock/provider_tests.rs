@@ -138,12 +138,11 @@ proptest! {
 
 #[tokio::test]
 async fn test_sigv4_signing_produces_valid_authorization_header() {
-    let config = BedrockProviderConfig::new("us-east-1", "anthropic.claude-v2")
-        .with_credentials(
-            "AKIAIOSFODNN7EXAMPLE",
-            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-            None,
-        );
+    let config = BedrockProviderConfig::new("us-east-1", "anthropic.claude-v2").with_credentials(
+        "AKIAIOSFODNN7EXAMPLE",
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        None,
+    );
     let provider = BedrockProvider::new(config).await.unwrap();
     let headers = provider
         .sign_request(
@@ -161,18 +160,19 @@ async fn test_sigv4_signing_produces_valid_authorization_header() {
     assert!(auth.1.starts_with("AWS4-HMAC-SHA256"));
     assert!(auth.1.contains("us-east-1"));
     assert!(auth.1.contains("bedrock"));
-    let date = headers.iter().find(|(k, _)| k.to_lowercase() == "x-amz-date");
+    let date = headers
+        .iter()
+        .find(|(k, _)| k.to_lowercase() == "x-amz-date");
     assert!(date.is_some(), "should have X-Amz-Date header");
 }
 
 #[tokio::test]
 async fn test_sigv4_session_token_included() {
-    let config = BedrockProviderConfig::new("us-west-2", "anthropic.claude-v2")
-        .with_credentials(
-            "AKIAIOSFODNN7EXAMPLE",
-            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-            Some("FwoGZXIvYXdzEBYaDHqa0AP".to_string()),
-        );
+    let config = BedrockProviderConfig::new("us-west-2", "anthropic.claude-v2").with_credentials(
+        "AKIAIOSFODNN7EXAMPLE",
+        "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        Some("FwoGZXIvYXdzEBYaDHqa0AP".to_string()),
+    );
     let provider = BedrockProvider::new(config).await.unwrap();
     let headers = provider
         .sign_request(
@@ -195,9 +195,14 @@ async fn test_credential_resolution_failure_returns_provider_error() {
         .with_profile("nonexistent-profile-that-does-not-exist-12345");
     match BedrockProvider::new(config).await {
         Ok(_) => {}
-        Err(KovaError::Provider { message, status_code }) => {
+        Err(KovaError::Provider {
+            message,
+            status_code,
+        }) => {
             assert!(
-                message.contains("credentials") || message.contains("credential") || message.contains("provider"),
+                message.contains("credentials")
+                    || message.contains("credential")
+                    || message.contains("provider"),
                 "Error message should mention credentials, got: {}",
                 message
             );

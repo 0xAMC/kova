@@ -6,7 +6,9 @@ use kova::agent::AgentBuilder;
 use kova::error::KovaError;
 use kova::models::*;
 
-use mock::provider::{make_text_response, make_tool_call_response, CapturingMockProvider, MockLlmProvider};
+use mock::provider::{
+    CapturingMockProvider, MockLlmProvider, make_text_response, make_tool_call_response,
+};
 use mock::tool::MockTool;
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -99,7 +101,12 @@ async fn tool_not_found_sends_error_to_llm() {
         .content
         .iter()
         .find_map(|b| {
-            if let ContentBlock::ToolResult { tool_use_id, content, .. } = b {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = b
+            {
                 Some((tool_use_id.as_str(), content.as_str()))
             } else {
                 None
@@ -113,7 +120,6 @@ async fn tool_not_found_sends_error_to_llm() {
         "tool error message should mention the missing tool, got: {content}"
     );
 }
-
 
 // ── Tool execution error ───────────────────────────────────────────
 
@@ -147,7 +153,12 @@ async fn tool_execution_error_forwarded_to_llm() {
         .content
         .iter()
         .find_map(|b| {
-            if let ContentBlock::ToolResult { tool_use_id, content, .. } = b {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = b
+            {
                 Some((tool_use_id.as_str(), content.as_str()))
             } else {
                 None
@@ -228,13 +239,15 @@ async fn multiple_tool_calls_in_single_response() {
 
     let ids: Vec<_> = tool_msgs
         .iter()
-        .flat_map(|m| m.content.iter().filter_map(|b| {
-            if let ContentBlock::ToolResult { tool_use_id, .. } = b {
-                Some(tool_use_id.as_str())
-            } else {
-                None
-            }
-        }))
+        .flat_map(|m| {
+            m.content.iter().filter_map(|b| {
+                if let ContentBlock::ToolResult { tool_use_id, .. } = b {
+                    Some(tool_use_id.as_str())
+                } else {
+                    None
+                }
+            })
+        })
         .collect();
     assert!(ids.contains(&"tc-a"));
     assert!(ids.contains(&"tc-b"));
@@ -268,7 +281,12 @@ async fn tool_call_with_empty_registry_sends_not_found() {
         .content
         .iter()
         .find_map(|b| {
-            if let ContentBlock::ToolResult { tool_use_id, content, .. } = b {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            } = b
+            {
                 Some((tool_use_id.as_str(), content.as_str()))
             } else {
                 None

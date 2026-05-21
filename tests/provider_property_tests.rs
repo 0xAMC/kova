@@ -210,7 +210,6 @@ proptest! {
     }
 }
 
-
 // ── HTTP Error Status Mapping ──────────────────────────
 //
 // For any HTTP response with a status code in the range 400–599,

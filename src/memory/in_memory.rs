@@ -54,10 +54,7 @@ impl MemoryStore for InMemoryStore {
         conversation_id: &str,
         message: ConversationMessage,
     ) -> Result<(), KovaError> {
-        let span = tracing::info_span!(
-            "memory.add_message",
-            conversation_id = conversation_id,
-        );
+        let span = tracing::info_span!("memory.add_message", conversation_id = conversation_id,);
         self.add_message_inner(conversation_id, message)
             .instrument(span)
             .await
@@ -67,23 +64,15 @@ impl MemoryStore for InMemoryStore {
         &self,
         conversation_id: &str,
     ) -> Result<Vec<ConversationMessage>, KovaError> {
-        let span = tracing::info_span!(
-            "memory.get_history",
-            conversation_id = conversation_id,
-        );
+        let span = tracing::info_span!("memory.get_history", conversation_id = conversation_id,);
         self.get_history_inner(conversation_id)
             .instrument(span)
             .await
     }
 
     async fn clear(&self, conversation_id: &str) -> Result<(), KovaError> {
-        let span = tracing::info_span!(
-            "memory.clear",
-            conversation_id = conversation_id,
-        );
-        self.clear_inner(conversation_id)
-            .instrument(span)
-            .await
+        let span = tracing::info_span!("memory.clear", conversation_id = conversation_id,);
+        self.clear_inner(conversation_id).instrument(span).await
     }
 }
 
@@ -147,4 +136,3 @@ impl InMemoryStore {
 #[cfg(test)]
 #[path = "in_memory_tests.rs"]
 mod in_memory_tests;
-

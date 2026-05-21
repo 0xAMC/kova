@@ -44,7 +44,8 @@ impl BedrockProviderConfig {
         let model_id = model_id.into();
         let base_url = format!(
             "https://bedrock-runtime.{}.amazonaws.com/model/{}/converse",
-            region, encode_path_segment(&model_id)
+            region,
+            encode_path_segment(&model_id)
         );
         Self {
             region,

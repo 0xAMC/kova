@@ -6,8 +6,8 @@ use serde_json::json;
 
 use kova::error::KovaError;
 use kova::models::ToolResult;
-use kova::tool::registry::ToolRegistry;
 use kova::tool::Tool;
+use kova::tool::registry::ToolRegistry;
 
 struct PropTool {
     tool_name: String,
@@ -41,7 +41,9 @@ fn arb_tool_spec() -> impl Strategy<Value = (String, String, serde_json::Value)>
         prop_oneof![
             Just(json!({"type": "object"})),
             Just(json!({"type": "object", "properties": {"x": {"type": "string"}}})),
-            Just(json!({"type": "object", "properties": {"n": {"type": "number"}}, "required": ["n"]})),
+            Just(
+                json!({"type": "object", "properties": {"n": {"type": "number"}}, "required": ["n"]})
+            ),
         ],
     )
 }

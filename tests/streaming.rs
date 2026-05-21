@@ -48,7 +48,6 @@ impl StreamingHandler for MockStreamingHandler {
     }
 }
 
-
 // ── StreamingMockProvider ──────────────────────────────────────────
 
 /// A mock provider that returns a pre-configured stream of StreamEvents.
@@ -85,9 +84,7 @@ impl LlmProvider for StreamingMockProvider {
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
     ) -> Result<
-        std::pin::Pin<
-            Box<dyn futures::Stream<Item = Result<StreamEvent, KovaError>> + Send>,
-        >,
+        std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent, KovaError>> + Send>>,
         KovaError,
     > {
         let events = std::mem::take(&mut *self.events.lock().await);
@@ -104,10 +101,16 @@ impl LlmProvider for StreamingMockProvider {
 #[tokio::test]
 async fn test_streaming_delivers_chunks_in_order() {
     let events = vec![
-        Ok(StreamEvent::ContentDelta { text: "Hello".into() }),
-        Ok(StreamEvent::ContentDelta { text: " world".into() }),
+        Ok(StreamEvent::ContentDelta {
+            text: "Hello".into(),
+        }),
+        Ok(StreamEvent::ContentDelta {
+            text: " world".into(),
+        }),
         Ok(StreamEvent::ContentDelta { text: "!".into() }),
-        Ok(StreamEvent::StopEvent { stop_reason: StopReason::EndTurn }),
+        Ok(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn,
+        }),
     ];
 
     let provider = Arc::new(StreamingMockProvider::new(events));
@@ -124,8 +127,18 @@ async fn test_streaming_delivers_chunks_in_order() {
 
     let chunks = handler.chunks.lock().await;
     assert_eq!(chunks.len(), 4);
-    assert_eq!(chunks[0], StreamEvent::ContentDelta { text: "Hello".into() });
-    assert_eq!(chunks[1], StreamEvent::ContentDelta { text: " world".into() });
+    assert_eq!(
+        chunks[0],
+        StreamEvent::ContentDelta {
+            text: "Hello".into()
+        }
+    );
+    assert_eq!(
+        chunks[1],
+        StreamEvent::ContentDelta {
+            text: " world".into()
+        }
+    );
     assert_eq!(chunks[2], StreamEvent::ContentDelta { text: "!".into() });
     assert!(matches!(chunks[3], StreamEvent::StopEvent { .. }));
 
@@ -135,8 +148,12 @@ async fn test_streaming_delivers_chunks_in_order() {
 #[tokio::test]
 async fn test_streaming_on_complete_called() {
     let events = vec![
-        Ok(StreamEvent::ContentDelta { text: "done".into() }),
-        Ok(StreamEvent::StopEvent { stop_reason: StopReason::EndTurn }),
+        Ok(StreamEvent::ContentDelta {
+            text: "done".into(),
+        }),
+        Ok(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn,
+        }),
     ];
 
     let provider = Arc::new(StreamingMockProvider::new(events));
@@ -149,14 +166,19 @@ async fn test_streaming_on_complete_called() {
         .unwrap();
 
     let _ = agent.chat_stream("conv2", "test").await.unwrap();
-    assert!(*handler.completed.lock().await, "on_complete should have been called");
+    assert!(
+        *handler.completed.lock().await,
+        "on_complete should have been called"
+    );
 }
 
 #[tokio::test]
 async fn test_streaming_on_error_on_stream_failure() {
     // Simulate a connection drop mid-stream by returning an error item.
     let events: Vec<Result<StreamEvent, KovaError>> = vec![
-        Ok(StreamEvent::ContentDelta { text: "partial".into() }),
+        Ok(StreamEvent::ContentDelta {
+            text: "partial".into(),
+        }),
         Err(KovaError::Stream("connection dropped".into())),
     ];
 
@@ -183,7 +205,9 @@ async fn test_streaming_requires_handler() {
     // should return a Build error.
     let events = vec![
         Ok(StreamEvent::ContentDelta { text: "hi".into() }),
-        Ok(StreamEvent::StopEvent { stop_reason: StopReason::EndTurn }),
+        Ok(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn,
+        }),
     ];
 
     let provider = Arc::new(StreamingMockProvider::new(events));
@@ -202,7 +226,11 @@ async fn test_streaming_accumulates_text_correctly() {
     let chunks: Vec<&str> = vec!["The ", "quick ", "brown ", "fox"];
     let events: Vec<Result<StreamEvent, KovaError>> = chunks
         .iter()
-        .map(|t| Ok(StreamEvent::ContentDelta { text: t.to_string() }))
+        .map(|t| {
+            Ok(StreamEvent::ContentDelta {
+                text: t.to_string(),
+            })
+        })
         .chain(std::iter::once(Ok(StreamEvent::StopEvent {
             stop_reason: StopReason::EndTurn,
         })))

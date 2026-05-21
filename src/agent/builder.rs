@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::error::KovaError;
 use crate::mcp::McpClient;
 use crate::mcp::tool::McpTool;
-use crate::memory::in_memory::InMemoryStore;
 use crate::memory::MemoryStore;
+use crate::memory::in_memory::InMemoryStore;
 use crate::models::InferenceConfig;
 use crate::provider::LlmProvider;
 use crate::streaming::StreamingHandler;
@@ -125,8 +125,11 @@ impl AgentBuilder {
     ) -> Result<Self, KovaError> {
         let tool_defs = client.tools_list().await?;
         for def in tool_defs {
-            self.tools
-                .push(Arc::new(McpTool::new(def, Arc::clone(&client), server_name)));
+            self.tools.push(Arc::new(McpTool::new(
+                def,
+                Arc::clone(&client),
+                server_name,
+            )));
         }
         Ok(self)
     }

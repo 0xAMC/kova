@@ -6,11 +6,11 @@
 use proptest::prelude::*;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use kova::error::KovaError;
 use kova::models::ToolResult;
-use kova::tool::registry::ToolRegistry;
 use kova::tool::Tool;
-use async_trait::async_trait;
+use kova::tool::registry::ToolRegistry;
 use serde_json::json;
 
 struct ConcurrentTestTool {

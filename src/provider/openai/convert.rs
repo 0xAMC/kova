@@ -12,7 +12,7 @@ use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
     StreamEvent, ToolDefinition, UsageStats,
 };
-use crate::streaming::sse::{parse_sse_data, parse_sse_line, SseLine};
+use crate::streaming::sse::{SseLine, parse_sse_data, parse_sse_line};
 
 // ── Request formatting ─────────────────────────────────────────────
 
@@ -27,7 +27,12 @@ pub(crate) fn format_request(
         // Tool-role messages: each ToolResult becomes a separate OaiMessage.
         if msg.role == Role::Tool {
             for block in &msg.content {
-                if let ContentBlock::ToolResult { tool_use_id, content, .. } = block {
+                if let ContentBlock::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } = block
+                {
                     oai_messages.push(OaiMessage {
                         role: "tool".to_string(),
                         content: Some(content.clone()),
@@ -70,8 +75,16 @@ pub(crate) fn format_request(
 
         oai_messages.push(OaiMessage {
             role: role_str.to_string(),
-            content: if text_parts.is_empty() { None } else { Some(text_parts.join("")) },
-            tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
+            content: if text_parts.is_empty() {
+                None
+            } else {
+                Some(text_parts.join(""))
+            },
+            tool_calls: if tool_calls.is_empty() {
+                None
+            } else {
+                Some(tool_calls)
+            },
             tool_call_id: None,
             name: None,
         });
@@ -107,11 +120,17 @@ pub(crate) fn format_request(
 
 // ── Response formatting ────────────────────────────────────────────
 
-pub(crate) fn format_response(oai_resp: OaiChatCompletionResponse) -> Result<ModelResponse, KovaError> {
-    let choice = oai_resp.choices.into_iter().next().ok_or_else(|| KovaError::Provider {
-        message: "No choices in response".to_string(),
-        status_code: None,
-    })?;
+pub(crate) fn format_response(
+    oai_resp: OaiChatCompletionResponse,
+) -> Result<ModelResponse, KovaError> {
+    let choice = oai_resp
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| KovaError::Provider {
+            message: "No choices in response".to_string(),
+            status_code: None,
+        })?;
 
     let role = choice.message.role.as_str();
     if role != "system" && role != "user" && role != "assistant" && role != "tool" {
@@ -147,7 +166,11 @@ pub(crate) fn format_response(oai_resp: OaiChatCompletionResponse) -> Result<Mod
         total_tokens: u.total_tokens,
     });
 
-    Ok(ModelResponse { content, stop_reason, usage })
+    Ok(ModelResponse {
+        content,
+        stop_reason,
+        usage,
+    })
 }
 
 fn map_finish_reason(reason: Option<&str>) -> StopReason {
@@ -167,7 +190,9 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
 
     for choice in chunk.choices {
         if let Some(reason) = &choice.finish_reason {
-            events.push(StreamEvent::StopEvent { stop_reason: map_finish_reason(Some(reason)) });
+            events.push(StreamEvent::StopEvent {
+                stop_reason: map_finish_reason(Some(reason)),
+            });
         }
         if let Some(text) = &choice.delta.content {
             if !text.is_empty() {
@@ -198,9 +223,8 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
 pub(crate) fn sse_byte_stream_to_events(
     byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
 ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>> {
-    let mapped = byte_stream.map(|chunk| {
-        chunk.map_err(|e| KovaError::Stream(format!("Connection error: {e}")))
-    });
+    let mapped = byte_stream
+        .map(|chunk| chunk.map_err(|e| KovaError::Stream(format!("Connection error: {e}"))));
 
     Box::pin(futures::stream::unfold(
         (
@@ -220,19 +244,17 @@ pub(crate) fn sse_byte_stream_to_events(
 
                     match parse_sse_line(&line) {
                         SseLine::Done => return None,
-                        SseLine::Data(data) => {
-                            match parse_sse_data::<OaiResponseChunk>(&data) {
-                                Ok(chunk) => {
-                                    let mut events: std::collections::VecDeque<_> =
-                                        format_stream_event(chunk).into();
-                                    if let Some(first) = events.pop_front() {
-                                        return Some((Ok(first), (stream, buffer, events)));
-                                    }
-                                    continue;
+                        SseLine::Data(data) => match parse_sse_data::<OaiResponseChunk>(&data) {
+                            Ok(chunk) => {
+                                let mut events: std::collections::VecDeque<_> =
+                                    format_stream_event(chunk).into();
+                                if let Some(first) = events.pop_front() {
+                                    return Some((Ok(first), (stream, buffer, events)));
                                 }
-                                Err(e) => return Some((Err(e), (stream, buffer, pending))),
+                                continue;
                             }
-                        }
+                            Err(e) => return Some((Err(e), (stream, buffer, pending))),
+                        },
                         SseLine::Empty | SseLine::Comment => continue,
                     }
                 }

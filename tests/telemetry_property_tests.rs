@@ -5,8 +5,8 @@
 
 use proptest::prelude::*;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -57,8 +57,7 @@ impl LlmProvider for TelemetryMockProvider {
         _messages: &[ConversationMessage],
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         Err(KovaError::Stream("not implemented".into()))
     }
 
@@ -132,7 +131,6 @@ fn make_tool_call_response(calls: Vec<(&str, &str)>) -> ModelResponse {
         }),
     }
 }
-
 
 // ════════════════════════════════════════════════════════════════════
 // Property 25: Tool Execution Span Attributes
@@ -328,7 +326,6 @@ async fn prop27_error_span_otel_status_code_on_tool_not_found() {
     assert!(logs_contain("ERROR"));
     assert!(logs_contain("Tool not found"));
 }
-
 
 // ════════════════════════════════════════════════════════════════════
 // Property 28: Metrics Counter Increments
@@ -545,7 +542,6 @@ fn prop29_env_filter_parses_for_all_levels() {
     }
 }
 
-
 // ════════════════════════════════════════════════════════════════════
 // Property 30: Span Parent References
 // ════════════════════════════════════════════════════════════════════
@@ -623,10 +619,7 @@ async fn prop30_span_parent_references_tool_under_agent() {
 #[tracing_test::traced_test]
 async fn prop30_multiple_tool_spans_under_same_parent() {
     let provider = Arc::new(TelemetryMockProvider::new(vec![
-        make_tool_call_response(vec![
-            ("tc_p30a", "tool_alpha"),
-            ("tc_p30b", "tool_beta"),
-        ]),
+        make_tool_call_response(vec![("tc_p30a", "tool_alpha"), ("tc_p30b", "tool_beta")]),
         make_text_response("done"),
     ]));
 

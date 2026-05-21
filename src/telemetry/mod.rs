@@ -79,7 +79,7 @@ impl TelemetryConfig {
     /// Basic subscriber — no OTEL dependencies.
     #[cfg(not(feature = "telemetry"))]
     fn init_basic(&self) -> Result<(), KovaError> {
-        use tracing_subscriber::{fmt, EnvFilter};
+        use tracing_subscriber::{EnvFilter, fmt};
 
         let filter = EnvFilter::new(self.log_level.to_string());
         fmt()
@@ -96,7 +96,7 @@ impl TelemetryConfig {
         use opentelemetry_otlp::WithExportConfig;
         use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
         use tracing_opentelemetry::OpenTelemetryLayer;
-        use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+        use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
         let sampler = if (self.sampling_rate - 1.0_f64).abs() < f64::EPSILON {
             Sampler::AlwaysOn

@@ -1,7 +1,7 @@
 pub mod bedrock;
 pub mod config;
-pub mod openai;
 pub(crate) mod http;
+pub mod openai;
 
 use std::pin::Pin;
 
@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use futures::Stream;
 
 use crate::error::KovaError;
-use crate::models::{ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, StreamEvent, ToolDefinition};
+use crate::models::{
+    ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, StreamEvent, ToolDefinition,
+};
 
 /// LLM provider abstraction.
 ///

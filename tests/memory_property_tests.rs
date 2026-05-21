@@ -1,7 +1,7 @@
 use proptest::prelude::*;
 
-use kova::memory::in_memory::InMemoryStore;
 use kova::memory::MemoryStore;
+use kova::memory::in_memory::InMemoryStore;
 use kova::models::{ContentBlock, ConversationMessage, Role};
 
 fn make_msg(role: Role, text: &str) -> ConversationMessage {

@@ -16,9 +16,19 @@ pub enum Role {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
-    Text { text: String },
-    ToolUse { id: String, name: String, input: serde_json::Value },
-    ToolResult { tool_use_id: String, content: String, is_error: bool },
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+    },
 }
 
 // ── Messages ───────────────────────────────────────────────────────
@@ -79,10 +89,20 @@ pub struct ToolDefinition {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum StreamEvent {
-    ContentDelta { text: String },
-    ToolUseDelta { id: String, name: Option<String>, input_delta: Option<String> },
-    StopEvent { stop_reason: StopReason },
-    Error { message: String },
+    ContentDelta {
+        text: String,
+    },
+    ToolUseDelta {
+        id: String,
+        name: Option<String>,
+        input_delta: Option<String>,
+    },
+    StopEvent {
+        stop_reason: StopReason,
+    },
+    Error {
+        message: String,
+    },
 }
 
 // ── Tool Result (used by Tool trait) ───────────────────────────────

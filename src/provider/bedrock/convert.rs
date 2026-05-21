@@ -1,13 +1,13 @@
+use super::types::{
+    BedrockContentBlock, BedrockContentBlockDelta, BedrockContentBlockStart,
+    BedrockConverseRequest, BedrockConverseResponse, BedrockInferenceConfig, BedrockInputSchema,
+    BedrockMessage, BedrockStreamEvent, BedrockSystemBlock, BedrockToolConfig,
+    BedrockToolResultContent, BedrockToolSpec, BedrockToolSpecInner,
+};
 use crate::error::KovaError;
 use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
     StreamEvent, ToolDefinition, UsageStats,
-};
-use super::types::{
-    BedrockContentBlock, BedrockContentBlockDelta, BedrockContentBlockStart,
-    BedrockConverseRequest, BedrockConverseResponse, BedrockInferenceConfig, BedrockInputSchema,
-    BedrockMessage, BedrockStreamEvent, BedrockSystemBlock, BedrockToolConfig, BedrockToolResultContent,
-    BedrockToolSpec, BedrockToolSpecInner,
 };
 
 pub(super) fn format_request(
@@ -130,7 +130,11 @@ pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResp
                 content,
                 status,
             } => {
-                let text = content.into_iter().map(|c| c.text).collect::<Vec<_>>().join("");
+                let text = content
+                    .into_iter()
+                    .map(|c| c.text)
+                    .collect::<Vec<_>>()
+                    .join("");
                 let is_error = status.as_deref() == Some("error");
                 ContentBlock::ToolResult {
                     tool_use_id,

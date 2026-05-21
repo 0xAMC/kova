@@ -4,8 +4,8 @@
 //! so it works both with and without the `telemetry` feature flag.
 //! It is `Send + Sync` by construction.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Collects quantitative measurements for observability.
 ///

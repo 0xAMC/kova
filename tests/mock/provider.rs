@@ -1,6 +1,6 @@
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -63,8 +63,7 @@ impl LlmProvider for MockLlmProvider {
         _messages: &[ConversationMessage],
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         Err(KovaError::Stream("not yet implemented".into()))
     }
 
@@ -89,7 +88,9 @@ pub fn make_text_response(text: &str) -> ModelResponse {
 }
 
 /// Helper to build an assistant response containing tool calls.
-pub fn make_tool_call_response(tool_calls: Vec<(String, String, serde_json::Value)>) -> ModelResponse {
+pub fn make_tool_call_response(
+    tool_calls: Vec<(String, String, serde_json::Value)>,
+) -> ModelResponse {
     let content = tool_calls
         .into_iter()
         .map(|(id, name, input)| ContentBlock::ToolUse { id, name, input })
@@ -104,7 +105,6 @@ pub fn make_tool_call_response(tool_calls: Vec<(String, String, serde_json::Valu
         }),
     }
 }
-
 
 /// A mock LLM provider that captures every request it receives.
 ///
@@ -151,8 +151,7 @@ impl LlmProvider for CapturingMockProvider {
         _messages: &[ConversationMessage],
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         Err(KovaError::Stream("not yet implemented".into()))
     }
 

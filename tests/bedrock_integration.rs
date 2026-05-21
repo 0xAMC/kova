@@ -1,10 +1,10 @@
-use kova::error::KovaError;
-use kova::models::*;
-use kova::provider::bedrock::{BedrockProvider, BedrockProviderConfig};
-use kova::provider::LlmProvider;
 use aws_smithy_eventstream::frame::write_message_to;
 use aws_smithy_types::event_stream::{Header, HeaderValue, Message};
 use futures::StreamExt;
+use kova::error::KovaError;
+use kova::models::*;
+use kova::provider::LlmProvider;
+use kova::provider::bedrock::{BedrockProvider, BedrockProviderConfig};
 use proptest::prelude::*;
 use serde_json::json;
 use std::time::Duration;
@@ -116,9 +116,7 @@ async fn test_chat_completion_http_403() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/model/anthropic.claude-v2/converse"))
-        .respond_with(
-            ResponseTemplate::new(403).set_body_string(r#"{"message":"access denied"}"#),
-        )
+        .respond_with(ResponseTemplate::new(403).set_body_string(r#"{"message":"access denied"}"#))
         .mount(&server)
         .await;
 
@@ -144,9 +142,7 @@ async fn test_chat_completion_http_429() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/model/anthropic.claude-v2/converse"))
-        .respond_with(
-            ResponseTemplate::new(429).set_body_string(r#"{"message":"throttled"}"#),
-        )
+        .respond_with(ResponseTemplate::new(429).set_body_string(r#"{"message":"throttled"}"#))
         .mount(&server)
         .await;
 
@@ -172,9 +168,7 @@ async fn test_chat_completion_http_500() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/model/anthropic.claude-v2/converse"))
-        .respond_with(
-            ResponseTemplate::new(500).set_body_string(r#"{"message":"internal error"}"#),
-        )
+        .respond_with(ResponseTemplate::new(500).set_body_string(r#"{"message":"internal error"}"#))
         .mount(&server)
         .await;
 
@@ -318,7 +312,6 @@ proptest! {
     }
 }
 
-
 // ── Event stream encoding helpers for streaming tests ──────────────
 
 /// Encode a single AWS event stream frame with the given `:event-type` header and JSON payload.
@@ -368,21 +361,14 @@ async fn test_chat_completion_stream_success() {
             "contentBlockDelta",
             json!({"contentBlockIndex": 0, "delta": {"text": "world"}}),
         ),
-        (
-            "contentBlockStop",
-            json!({"contentBlockIndex": 0}),
-        ),
-        (
-            "messageStop",
-            json!({"stopReason": "end_turn"}),
-        ),
+        ("contentBlockStop", json!({"contentBlockIndex": 0})),
+        ("messageStop", json!({"stopReason": "end_turn"})),
     ]);
 
     Mock::given(method("POST"))
         .and(path("/model/anthropic.claude-v2/converse-stream"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(body, "application/vnd.amazon.eventstream")
+            ResponseTemplate::new(200).set_body_raw(body, "application/vnd.amazon.eventstream"),
         )
         .mount(&server)
         .await;
@@ -445,21 +431,14 @@ async fn test_chat_completion_stream_tool_use() {
                 "delta": {"toolUse": {"input": "{\"city\": \"Seattle\"}"}}
             }),
         ),
-        (
-            "contentBlockStop",
-            json!({"contentBlockIndex": 0}),
-        ),
-        (
-            "messageStop",
-            json!({"stopReason": "tool_use"}),
-        ),
+        ("contentBlockStop", json!({"contentBlockIndex": 0})),
+        ("messageStop", json!({"stopReason": "tool_use"})),
     ]);
 
     Mock::given(method("POST"))
         .and(path("/model/anthropic.claude-v2/converse-stream"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(body, "application/vnd.amazon.eventstream")
+            ResponseTemplate::new(200).set_body_raw(body, "application/vnd.amazon.eventstream"),
         )
         .mount(&server)
         .await;
@@ -513,8 +492,7 @@ async fn test_chat_completion_stream_http_error() {
     Mock::given(method("POST"))
         .and(path("/model/anthropic.claude-v2/converse-stream"))
         .respond_with(
-            ResponseTemplate::new(400)
-                .set_body_string(r#"{"message":"validation error"}"#),
+            ResponseTemplate::new(400).set_body_string(r#"{"message":"validation error"}"#),
         )
         .mount(&server)
         .await;
@@ -545,20 +523,17 @@ async fn test_chat_completion_stream_truncated_body() {
     let server = MockServer::start().await;
 
     // Build one valid frame followed by a truncated frame (just the first 4 bytes of a prelude)
-    let mut body = build_event_stream_body(&[
-        (
-            "contentBlockDelta",
-            json!({"contentBlockIndex": 0, "delta": {"text": "partial"}}),
-        ),
-    ]);
+    let mut body = build_event_stream_body(&[(
+        "contentBlockDelta",
+        json!({"contentBlockIndex": 0, "delta": {"text": "partial"}}),
+    )]);
     // Append truncated bytes that look like the start of a frame but are incomplete
     body.extend_from_slice(&[0x00, 0x00, 0x00, 0x50, 0x00, 0x00, 0x00, 0x20]);
 
     Mock::given(method("POST"))
         .and(path("/model/anthropic.claude-v2/converse-stream"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(body, "application/vnd.amazon.eventstream")
+            ResponseTemplate::new(200).set_body_raw(body, "application/vnd.amazon.eventstream"),
         )
         .mount(&server)
         .await;
@@ -789,7 +764,8 @@ async fn test_list_models_large_response() {
     assert_eq!(models[7].owned_by, "Cohere");
 
     // Verify multiple providers are represented
-    let providers: std::collections::HashSet<&str> = models.iter().map(|m| m.owned_by.as_str()).collect();
+    let providers: std::collections::HashSet<&str> =
+        models.iter().map(|m| m.owned_by.as_str()).collect();
     assert!(providers.contains("Anthropic"));
     assert!(providers.contains("Meta"));
     assert!(providers.contains("Mistral AI"));
@@ -940,21 +916,14 @@ async fn test_chat_completion_stream_via_dyn_llm_provider() {
             "contentBlockDelta",
             json!({"contentBlockIndex": 0, "delta": {"text": "le monde"}}),
         ),
-        (
-            "contentBlockStop",
-            json!({"contentBlockIndex": 0}),
-        ),
-        (
-            "messageStop",
-            json!({"stopReason": "end_turn"}),
-        ),
+        ("contentBlockStop", json!({"contentBlockIndex": 0})),
+        ("messageStop", json!({"stopReason": "end_turn"})),
     ]);
 
     Mock::given(method("POST"))
         .and(path("/model/anthropic.claude-v2/converse-stream"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_raw(body, "application/vnd.amazon.eventstream"),
+            ResponseTemplate::new(200).set_body_raw(body, "application/vnd.amazon.eventstream"),
         )
         .mount(&server)
         .await;

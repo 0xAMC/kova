@@ -35,7 +35,11 @@ fn arb_tool_result_block() -> impl Strategy<Value = ContentBlock> {
 }
 
 fn arb_content_block() -> impl Strategy<Value = ContentBlock> {
-    prop_oneof![arb_text_block(), arb_tool_use_block(), arb_tool_result_block()]
+    prop_oneof![
+        arb_text_block(),
+        arb_tool_use_block(),
+        arb_tool_result_block()
+    ]
 }
 
 fn arb_stop_reason_str() -> impl Strategy<Value = String> {
@@ -70,8 +74,7 @@ fn arb_bedrock_tool_use_start() -> impl Strategy<Value = BedrockStreamEvent> {
 }
 
 fn arb_bedrock_message_stop() -> impl Strategy<Value = BedrockStreamEvent> {
-    arb_stop_reason_str()
-        .prop_map(|stop_reason| BedrockStreamEvent::MessageStop { stop_reason })
+    arb_stop_reason_str().prop_map(|stop_reason| BedrockStreamEvent::MessageStop { stop_reason })
 }
 
 fn arb_bedrock_content_block_stop() -> impl Strategy<Value = BedrockStreamEvent> {
@@ -104,8 +107,7 @@ fn arb_bedrock_stream_event() -> impl Strategy<Value = BedrockStreamEvent> {
     ]
 }
 
-fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEvent, StreamEvent)>
-{
+fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEvent, StreamEvent)> {
     prop_oneof![
         (0u32..100u32, arb_text()).prop_map(|(idx, text)| {
             let event = BedrockStreamEvent::ContentBlockDelta {
@@ -118,7 +120,9 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
         (0u32..100u32, arb_text()).prop_map(|(idx, input)| {
             let event = BedrockStreamEvent::ContentBlockDelta {
                 content_block_index: idx,
-                delta: BedrockContentBlockDelta::ToolUse { input: input.clone() },
+                delta: BedrockContentBlockDelta::ToolUse {
+                    input: input.clone(),
+                },
             };
             let expected = StreamEvent::ToolUseDelta {
                 id: String::new(),
@@ -127,23 +131,21 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
             };
             (event, expected)
         }),
-        (0u32..100u32, arb_identifier(), arb_identifier()).prop_map(
-            |(idx, tool_use_id, name)| {
-                let event = BedrockStreamEvent::ContentBlockStart {
-                    content_block_index: idx,
-                    start: BedrockContentBlockStart::ToolUse {
-                        tool_use_id: tool_use_id.clone(),
-                        name: name.clone(),
-                    },
-                };
-                let expected = StreamEvent::ToolUseDelta {
-                    id: tool_use_id,
-                    name: Some(name),
-                    input_delta: None,
-                };
-                (event, expected)
-            }
-        ),
+        (0u32..100u32, arb_identifier(), arb_identifier()).prop_map(|(idx, tool_use_id, name)| {
+            let event = BedrockStreamEvent::ContentBlockStart {
+                content_block_index: idx,
+                start: BedrockContentBlockStart::ToolUse {
+                    tool_use_id: tool_use_id.clone(),
+                    name: name.clone(),
+                },
+            };
+            let expected = StreamEvent::ToolUseDelta {
+                id: tool_use_id,
+                name: Some(name),
+                input_delta: None,
+            };
+            (event, expected)
+        }),
         arb_stop_reason_str().prop_map(|stop_reason| {
             let event = BedrockStreamEvent::MessageStop {
                 stop_reason: stop_reason.clone(),
@@ -336,12 +338,17 @@ proptest! {
 fn test_format_request_serialization() {
     let msg = ConversationMessage {
         role: Role::User,
-        content: vec![ContentBlock::Text { text: "Hello, world!".to_string() }],
+        content: vec![ContentBlock::Text {
+            text: "Hello, world!".to_string(),
+        }],
     };
     let request = format_request(&[msg], &[], &InferenceConfig::default());
     let json_val = serde_json::to_value(&request).unwrap();
     assert_eq!(json_val["messages"][0]["role"], "user");
-    assert_eq!(json_val["messages"][0]["content"][0]["text"], "Hello, world!");
+    assert_eq!(
+        json_val["messages"][0]["content"][0]["text"],
+        "Hello, world!"
+    );
     assert!(json_val.get("inferenceConfig").is_some());
 }
 
@@ -356,13 +363,19 @@ fn test_format_response_deserialization() {
             },
         },
         stop_reason: "end_turn".to_string(),
-        usage: BedrockUsage { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        usage: BedrockUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+        },
     };
     let model_resp = format_response(resp).unwrap();
     assert_eq!(model_resp.content.len(), 1);
     assert_eq!(
         model_resp.content[0],
-        ContentBlock::Text { text: "Hi there!".to_string() }
+        ContentBlock::Text {
+            text: "Hi there!".to_string()
+        }
     );
     assert_eq!(model_resp.stop_reason, StopReason::EndTurn);
     let usage = model_resp.usage.unwrap();
@@ -388,7 +401,9 @@ fn test_tool_definition_complex_schema() {
     };
     let msg = ConversationMessage {
         role: Role::User,
-        content: vec![ContentBlock::Text { text: "hi".to_string() }],
+        content: vec![ContentBlock::Text {
+            text: "hi".to_string(),
+        }],
     };
     let request = format_request(&[msg], &[tool], &InferenceConfig::default());
     let json_val = serde_json::to_value(&request).unwrap();
@@ -403,19 +418,27 @@ fn test_system_message_extraction_mixed() {
     let messages = vec![
         ConversationMessage {
             role: Role::System,
-            content: vec![ContentBlock::Text { text: "Be helpful".to_string() }],
+            content: vec![ContentBlock::Text {
+                text: "Be helpful".to_string(),
+            }],
         },
         ConversationMessage {
             role: Role::User,
-            content: vec![ContentBlock::Text { text: "Hi".to_string() }],
+            content: vec![ContentBlock::Text {
+                text: "Hi".to_string(),
+            }],
         },
         ConversationMessage {
             role: Role::Assistant,
-            content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+            content: vec![ContentBlock::Text {
+                text: "Hello".to_string(),
+            }],
         },
         ConversationMessage {
             role: Role::User,
-            content: vec![ContentBlock::Text { text: "How are you?".to_string() }],
+            content: vec![ContentBlock::Text {
+                text: "How are you?".to_string(),
+            }],
         },
     ];
     let request = format_request(&messages, &[], &InferenceConfig::default());
@@ -433,19 +456,28 @@ fn test_system_message_extraction_mixed() {
 #[test]
 fn test_stop_reason_end_turn() {
     let resp = response_with_stop_reason("end_turn");
-    assert_eq!(format_response(resp).unwrap().stop_reason, StopReason::EndTurn);
+    assert_eq!(
+        format_response(resp).unwrap().stop_reason,
+        StopReason::EndTurn
+    );
 }
 
 #[test]
 fn test_stop_reason_tool_use() {
     let resp = response_with_stop_reason("tool_use");
-    assert_eq!(format_response(resp).unwrap().stop_reason, StopReason::ToolUse);
+    assert_eq!(
+        format_response(resp).unwrap().stop_reason,
+        StopReason::ToolUse
+    );
 }
 
 #[test]
 fn test_stop_reason_max_tokens() {
     let resp = response_with_stop_reason("max_tokens");
-    assert_eq!(format_response(resp).unwrap().stop_reason, StopReason::MaxTokens);
+    assert_eq!(
+        format_response(resp).unwrap().stop_reason,
+        StopReason::MaxTokens
+    );
 }
 
 #[test]
@@ -461,7 +493,9 @@ fn test_stop_reason_unknown() {
 fn test_empty_tools_no_tool_config() {
     let msg = ConversationMessage {
         role: Role::User,
-        content: vec![ContentBlock::Text { text: "hi".to_string() }],
+        content: vec![ContentBlock::Text {
+            text: "hi".to_string(),
+        }],
     };
     let request = format_request(&[msg], &[], &InferenceConfig::default());
     let json_val = serde_json::to_value(&request).unwrap();
@@ -476,7 +510,9 @@ fn test_format_stream_event_text_delta() {
     };
     assert_eq!(
         format_stream_event(event),
-        Some(StreamEvent::ContentDelta { text: "Hello world".to_string() })
+        Some(StreamEvent::ContentDelta {
+            text: "Hello world".to_string()
+        })
     );
 }
 
@@ -519,16 +555,22 @@ fn test_format_stream_event_tool_use_input_delta() {
 
 #[test]
 fn test_format_stream_event_message_stop_end_turn() {
-    let event = BedrockStreamEvent::MessageStop { stop_reason: "end_turn".to_string() };
+    let event = BedrockStreamEvent::MessageStop {
+        stop_reason: "end_turn".to_string(),
+    };
     assert_eq!(
         format_stream_event(event),
-        Some(StreamEvent::StopEvent { stop_reason: StopReason::EndTurn })
+        Some(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn
+        })
     );
 }
 
 #[test]
 fn test_format_stream_event_content_block_stop_ignored() {
-    let event = BedrockStreamEvent::ContentBlockStop { content_block_index: 0 };
+    let event = BedrockStreamEvent::ContentBlockStop {
+        content_block_index: 0,
+    };
     assert!(format_stream_event(event).is_none());
 }
 
@@ -536,7 +578,11 @@ fn test_format_stream_event_content_block_stop_ignored() {
 fn test_format_stream_event_metadata_ignored() {
     use super::super::types::BedrockUsage;
     let event = BedrockStreamEvent::Metadata {
-        usage: BedrockUsage { input_tokens: 10, output_tokens: 5, total_tokens: 15 },
+        usage: BedrockUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+        },
     };
     assert!(format_stream_event(event).is_none());
 }

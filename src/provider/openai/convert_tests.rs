@@ -1,6 +1,6 @@
 use super::*;
 use crate::provider::openai::types::{
-    OaiChoice, OaiChatCompletionResponse, OaiMessage, OaiToolCall, OaiFunctionCall, OaiUsage,
+    OaiChatCompletionResponse, OaiChoice, OaiFunctionCall, OaiMessage, OaiToolCall, OaiUsage,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -8,12 +8,18 @@ use serde_json::json;
 fn sample_messages() -> Vec<ConversationMessage> {
     vec![ConversationMessage {
         role: Role::User,
-        content: vec![ContentBlock::Text { text: "Hello".to_string() }],
+        content: vec![ContentBlock::Text {
+            text: "Hello".to_string(),
+        }],
     }]
 }
 
 fn sample_config() -> InferenceConfig {
-    InferenceConfig { model: Some("test-model".to_string()), max_tokens: Some(100), temperature: Some(0.7) }
+    InferenceConfig {
+        model: Some("test-model".to_string()),
+        max_tokens: Some(100),
+        temperature: Some(0.7),
+    }
 }
 
 fn sample_oai_response() -> OaiChatCompletionResponse {
@@ -33,7 +39,11 @@ fn sample_oai_response() -> OaiChatCompletionResponse {
             },
             finish_reason: Some("stop".to_string()),
         }],
-        usage: Some(OaiUsage { prompt_tokens: 5, completion_tokens: 3, total_tokens: 8 }),
+        usage: Some(OaiUsage {
+            prompt_tokens: 5,
+            completion_tokens: 3,
+            total_tokens: 8,
+        }),
     }
 }
 
@@ -53,7 +63,11 @@ fn test_format_request_basic_text_message() {
 
 #[test]
 fn test_format_request_omits_none_fields() {
-    let config = InferenceConfig { model: Some("m".to_string()), max_tokens: None, temperature: None };
+    let config = InferenceConfig {
+        model: Some("m".to_string()),
+        max_tokens: None,
+        temperature: None,
+    };
     let req = format_request(&sample_messages(), &[], &config);
     let json_val = serde_json::to_value(&req).unwrap();
     assert!(json_val.get("max_tokens").is_none());
@@ -122,7 +136,12 @@ fn test_format_response_basic() {
     let resp = format_response(sample_oai_response()).unwrap();
     assert_eq!(resp.stop_reason, StopReason::EndTurn);
     assert_eq!(resp.content.len(), 1);
-    assert_eq!(resp.content[0], ContentBlock::Text { text: "Hi there!".to_string() });
+    assert_eq!(
+        resp.content[0],
+        ContentBlock::Text {
+            text: "Hi there!".to_string()
+        }
+    );
     let usage = resp.usage.unwrap();
     assert_eq!(usage.input_tokens, 5);
     assert_eq!(usage.output_tokens, 3);
@@ -140,17 +159,25 @@ fn test_format_response_without_usage() {
 #[test]
 fn test_format_response_tool_calls_finish_reason() {
     let oai_resp = OaiChatCompletionResponse {
-        id: "id".to_string(), object: "chat.completion".to_string(), created: 0,
+        id: "id".to_string(),
+        object: "chat.completion".to_string(),
+        created: 0,
         model: "m".to_string(),
         choices: vec![OaiChoice {
             index: 0,
             message: OaiMessage {
-                role: "assistant".to_string(), content: None,
+                role: "assistant".to_string(),
+                content: None,
                 tool_calls: Some(vec![OaiToolCall {
-                    id: "tc_1".to_string(), call_type: "function".to_string(),
-                    function: OaiFunctionCall { name: "search".to_string(), arguments: "{}".to_string() },
+                    id: "tc_1".to_string(),
+                    call_type: "function".to_string(),
+                    function: OaiFunctionCall {
+                        name: "search".to_string(),
+                        arguments: "{}".to_string(),
+                    },
                 }]),
-                tool_call_id: None, name: None,
+                tool_call_id: None,
+                name: None,
             },
             finish_reason: Some("tool_calls".to_string()),
         }],
@@ -159,7 +186,10 @@ fn test_format_response_tool_calls_finish_reason() {
     let resp = format_response(oai_resp).unwrap();
     assert_eq!(resp.stop_reason, StopReason::ToolUse);
     match &resp.content[0] {
-        ContentBlock::ToolUse { id, name, .. } => { assert_eq!(id, "tc_1"); assert_eq!(name, "search"); }
+        ContentBlock::ToolUse { id, name, .. } => {
+            assert_eq!(id, "tc_1");
+            assert_eq!(name, "search");
+        }
         other => panic!("Expected ToolUse, got {:?}", other),
     }
 }
@@ -169,14 +199,21 @@ fn test_format_response_unknown_finish_reason() {
     let mut resp = sample_oai_response();
     resp.choices[0].finish_reason = Some("content_filter".to_string());
     let model_resp = format_response(resp).unwrap();
-    assert_eq!(model_resp.stop_reason, StopReason::Unknown("content_filter".to_string()));
+    assert_eq!(
+        model_resp.stop_reason,
+        StopReason::Unknown("content_filter".to_string())
+    );
 }
 
 #[test]
 fn test_format_response_empty_choices_error() {
     let oai_resp = OaiChatCompletionResponse {
-        id: "id".to_string(), object: "chat.completion".to_string(), created: 0,
-        model: "m".to_string(), choices: vec![], usage: None,
+        id: "id".to_string(),
+        object: "chat.completion".to_string(),
+        created: 0,
+        model: "m".to_string(),
+        choices: vec![],
+        usage: None,
     };
     let err = format_response(oai_resp).unwrap_err();
     match err {
@@ -192,35 +229,66 @@ fn arb_nonempty_text() -> impl Strategy<Value = String> {
 }
 
 fn arb_tool_use_block() -> impl Strategy<Value = ContentBlock> {
-    ("[a-z0-9]{4,12}", "[a-z_]{2,15}", Just(json!({"key": "value"})))
+    (
+        "[a-z0-9]{4,12}",
+        "[a-z_]{2,15}",
+        Just(json!({"key": "value"})),
+    )
         .prop_map(|(id, name, input)| ContentBlock::ToolUse { id, name, input })
 }
 
 fn arb_text_only_assistant() -> impl Strategy<Value = (ConversationMessage, StopReason)> {
     proptest::collection::vec(arb_nonempty_text(), 1..=3).prop_map(|texts| {
-        let content = texts.into_iter().map(|text| ContentBlock::Text { text }).collect();
-        (ConversationMessage { role: Role::Assistant, content }, StopReason::EndTurn)
+        let content = texts
+            .into_iter()
+            .map(|text| ContentBlock::Text { text })
+            .collect();
+        (
+            ConversationMessage {
+                role: Role::Assistant,
+                content,
+            },
+            StopReason::EndTurn,
+        )
     })
 }
 
 fn arb_tool_use_only_assistant() -> impl Strategy<Value = (ConversationMessage, StopReason)> {
     proptest::collection::vec(arb_tool_use_block(), 1..=3).prop_map(|blocks| {
-        (ConversationMessage { role: Role::Assistant, content: blocks }, StopReason::ToolUse)
+        (
+            ConversationMessage {
+                role: Role::Assistant,
+                content: blocks,
+            },
+            StopReason::ToolUse,
+        )
     })
 }
 
 fn arb_mixed_assistant() -> impl Strategy<Value = (ConversationMessage, StopReason)> {
-    (arb_nonempty_text(), proptest::collection::vec(arb_tool_use_block(), 1..=2)).prop_map(
-        |(text, tool_blocks)| {
+    (
+        arb_nonempty_text(),
+        proptest::collection::vec(arb_tool_use_block(), 1..=2),
+    )
+        .prop_map(|(text, tool_blocks)| {
             let mut content = vec![ContentBlock::Text { text }];
             content.extend(tool_blocks);
-            (ConversationMessage { role: Role::Assistant, content }, StopReason::ToolUse)
-        },
-    )
+            (
+                ConversationMessage {
+                    role: Role::Assistant,
+                    content,
+                },
+                StopReason::ToolUse,
+            )
+        })
 }
 
 fn arb_assistant_message_with_stop() -> impl Strategy<Value = (ConversationMessage, StopReason)> {
-    prop_oneof![arb_text_only_assistant(), arb_tool_use_only_assistant(), arb_mixed_assistant()]
+    prop_oneof![
+        arb_text_only_assistant(),
+        arb_tool_use_only_assistant(),
+        arb_mixed_assistant()
+    ]
 }
 
 fn stop_reason_to_finish_reason(sr: &StopReason) -> String {
@@ -234,36 +302,43 @@ fn stop_reason_to_finish_reason(sr: &StopReason) -> String {
 
 fn arb_tool_result_block() -> impl Strategy<Value = ContentBlock> {
     ("[a-z0-9]{4,12}", arb_nonempty_text(), proptest::bool::ANY).prop_map(
-        |(tool_use_id, content, is_error)| ContentBlock::ToolResult { tool_use_id, content, is_error },
+        |(tool_use_id, content, is_error)| ContentBlock::ToolResult {
+            tool_use_id,
+            content,
+            is_error,
+        },
     )
 }
 
 fn arb_user_text_message() -> impl Strategy<Value = ConversationMessage> {
     proptest::collection::vec(arb_nonempty_text(), 1..=3).prop_map(|texts| ConversationMessage {
         role: Role::User,
-        content: texts.into_iter().map(|text| ContentBlock::Text { text }).collect(),
+        content: texts
+            .into_iter()
+            .map(|text| ContentBlock::Text { text })
+            .collect(),
     })
 }
 
 fn arb_tool_result_message() -> impl Strategy<Value = ConversationMessage> {
-    proptest::collection::vec(arb_tool_result_block(), 1..=3).prop_map(|blocks| ConversationMessage {
-        role: Role::Tool,
-        content: blocks,
+    proptest::collection::vec(arb_tool_result_block(), 1..=3).prop_map(|blocks| {
+        ConversationMessage {
+            role: Role::Tool,
+            content: blocks,
+        }
     })
 }
 
 fn arb_unrecognized_finish_reason() -> impl Strategy<Value = String> {
-    "[a-zA-Z0-9_. -]{1,50}".prop_filter(
-        "must not be a recognized finish_reason",
-        |s| s != "stop" && s != "tool_calls" && s != "length",
-    )
+    "[a-zA-Z0-9_. -]{1,50}".prop_filter("must not be a recognized finish_reason", |s| {
+        s != "stop" && s != "tool_calls" && s != "length"
+    })
 }
 
 fn arb_unrecognized_role() -> impl Strategy<Value = String> {
-    "[a-zA-Z0-9_. -]{1,50}".prop_filter(
-        "must not be a recognized role",
-        |s| s != "system" && s != "user" && s != "assistant" && s != "tool",
-    )
+    "[a-zA-Z0-9_. -]{1,50}".prop_filter("must not be a recognized role", |s| {
+        s != "system" && s != "user" && s != "assistant" && s != "tool"
+    })
 }
 
 proptest! {

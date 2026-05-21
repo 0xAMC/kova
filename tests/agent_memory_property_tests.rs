@@ -1,7 +1,7 @@
 use proptest::prelude::*;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use futures::Stream;
@@ -9,8 +9,8 @@ use tokio::sync::Mutex;
 
 use kova::agent::AgentBuilder;
 use kova::error::KovaError;
-use kova::memory::in_memory::InMemoryStore;
 use kova::memory::MemoryStore;
+use kova::memory::in_memory::InMemoryStore;
 use kova::models::*;
 use kova::provider::LlmProvider;
 
@@ -53,10 +53,7 @@ impl LlmProvider for CapturingMock {
         _messages: &[ConversationMessage],
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
-    ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>,
-        KovaError,
-    > {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         Err(KovaError::Stream("not implemented".into()))
     }
 

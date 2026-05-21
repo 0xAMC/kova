@@ -58,10 +58,7 @@ impl Tool for McpTool {
     }
 
     fn description(&self) -> &str {
-        self.definition
-            .description
-            .as_deref()
-            .unwrap_or("")
+        self.definition.description.as_deref().unwrap_or("")
     }
 
     fn parameters_schema(&self) -> Value {
@@ -97,7 +94,10 @@ mod tests {
         // We can't create a real McpClient in a unit test, but we can verify
         // the trait method implementations via a helper that doesn't call execute.
         assert_eq!(def.name, "get_weather");
-        assert_eq!(def.description.as_deref(), Some("Get current weather for a city"));
+        assert_eq!(
+            def.description.as_deref(),
+            Some("Get current weather for a city")
+        );
     }
 
     #[test]

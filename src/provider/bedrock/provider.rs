@@ -3,9 +3,9 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use aws_credential_types::provider::ProvideCredentials;
 use aws_credential_types::Credentials;
-use aws_sigv4::http_request::{sign, SignableBody, SignableRequest, SigningSettings};
+use aws_credential_types::provider::ProvideCredentials;
+use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
 use aws_sigv4::sign::v4;
 use aws_smithy_eventstream::frame::{DecodedFrame, MessageFrameDecoder};
 use futures::{Stream, StreamExt};
@@ -18,15 +18,17 @@ fn url_encode_model_id(model_id: &str) -> String {
     super::config::encode_path_segment(model_id)
 }
 
-use crate::error::KovaError;
-use crate::models::{ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, StreamEvent, ToolDefinition};
-use crate::provider::LlmProvider;
-use crate::provider::http::map_request_error;
 use super::config::BedrockProviderConfig;
 use super::convert::{format_request, format_response, format_stream_event};
 use super::error::parse_bedrock_error;
 use super::stream::parse_event_stream_frame;
 use super::types::{BedrockConverseResponse, BedrockModelListResponse};
+use crate::error::KovaError;
+use crate::models::{
+    ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, StreamEvent, ToolDefinition,
+};
+use crate::provider::LlmProvider;
+use crate::provider::http::map_request_error;
 
 pub struct BedrockProvider {
     client: reqwest::Client,
@@ -42,30 +44,32 @@ impl BedrockProvider {
     /// 2. Named profile
     /// 3. Default credential chain
     pub async fn new(config: BedrockProviderConfig) -> Result<Self, KovaError> {
-        let credentials_provider: Arc<dyn ProvideCredentials> =
-            if let (Some(access_key_id), Some(secret_access_key)) =
-                (&config.access_key_id, &config.secret_access_key)
-            {
-                let creds = Credentials::from_keys(
-                    access_key_id.clone(),
-                    secret_access_key.clone(),
-                    config.session_token.clone(),
-                );
-                Arc::new(creds)
-            } else {
-                let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
-                if let Some(profile) = &config.profile {
-                    loader = loader.profile_name(profile);
-                }
-                let sdk_config = loader.load().await;
-                let provider = sdk_config.credentials_provider().ok_or_else(|| {
+        let credentials_provider: Arc<dyn ProvideCredentials> = if let (
+            Some(access_key_id),
+            Some(secret_access_key),
+        ) =
+            (&config.access_key_id, &config.secret_access_key)
+        {
+            let creds = Credentials::from_keys(
+                access_key_id.clone(),
+                secret_access_key.clone(),
+                config.session_token.clone(),
+            );
+            Arc::new(creds)
+        } else {
+            let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+            if let Some(profile) = &config.profile {
+                loader = loader.profile_name(profile);
+            }
+            let sdk_config = loader.load().await;
+            let provider = sdk_config.credentials_provider().ok_or_else(|| {
                     KovaError::Provider {
                         message: "Failed to resolve AWS credentials: no credentials provider found in the default chain".to_string(),
                         status_code: None,
                     }
                 })?;
-                Arc::from(provider)
-            };
+            Arc::from(provider)
+        };
 
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
@@ -122,13 +126,12 @@ impl BedrockProvider {
                     status_code: None,
                 })?;
 
-        let (signing_instructions, _signature) =
-            sign(signable_request, &signing_params)
-                .map_err(|e| KovaError::Provider {
-                    message: format!("SigV4 signing failed: {e}"),
-                    status_code: None,
-                })?
-                .into_parts();
+        let (signing_instructions, _signature) = sign(signable_request, &signing_params)
+            .map_err(|e| KovaError::Provider {
+                message: format!("SigV4 signing failed: {e}"),
+                status_code: None,
+            })?
+            .into_parts();
 
         Ok(signing_instructions
             .headers()
@@ -220,8 +223,7 @@ impl LlmProvider for BedrockProvider {
         messages: &[ConversationMessage],
         tools: &[ToolDefinition],
         config: &InferenceConfig,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         let span = tracing::info_span!(
             "llm.chat_completion_stream",
             provider = "bedrock",
@@ -270,7 +272,11 @@ impl LlmProvider for BedrockProvider {
         let byte_stream = response.bytes_stream();
 
         let stream = futures::stream::try_unfold(
-            (byte_stream, MessageFrameDecoder::new(), bytes::BytesMut::new()),
+            (
+                byte_stream,
+                MessageFrameDecoder::new(),
+                bytes::BytesMut::new(),
+            ),
             |(mut byte_stream, mut decoder, mut buffer)| async move {
                 loop {
                     match decoder.decode_frame(&mut buffer) {
@@ -300,9 +306,7 @@ impl LlmProvider for BedrockProvider {
                     match byte_stream.next().await {
                         Some(Ok(chunk)) => buffer.extend_from_slice(&chunk),
                         Some(Err(e)) => {
-                            return Err(KovaError::Stream(format!(
-                                "Stream connection error: {e}"
-                            )));
+                            return Err(KovaError::Stream(format!("Stream connection error: {e}")));
                         }
                         None => return Ok(None),
                     }
@@ -368,7 +372,6 @@ impl LlmProvider for BedrockProvider {
             .collect())
     }
 }
-
 
 #[cfg(test)]
 #[path = "provider_tests.rs"]

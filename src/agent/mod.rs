@@ -55,7 +55,9 @@ impl Agent {
             conversation_id = conversation_id,
             otel.status_code = tracing::field::Empty,
         );
-        self.chat_inner(conversation_id, user_message).instrument(span).await
+        self.chat_inner(conversation_id, user_message)
+            .instrument(span)
+            .await
     }
 
     /// Send a user message and stream the assistant's response via the
@@ -79,7 +81,9 @@ impl Agent {
             conversation_id = conversation_id,
             otel.status_code = tracing::field::Empty,
         );
-        self.chat_stream_inner(conversation_id, user_message).instrument(span).await
+        self.chat_stream_inner(conversation_id, user_message)
+            .instrument(span)
+            .await
     }
 
     // ── Non-streaming agentic loop ────────────────────────────────────
@@ -92,26 +96,36 @@ impl Agent {
         conversation_id: &str,
         user_message: &str,
     ) -> Result<String, KovaError> {
-        self.store_user_message(conversation_id, user_message).await?;
+        self.store_user_message(conversation_id, user_message)
+            .await?;
 
         let tool_defs = self.tool_registry.tool_definitions().await;
         let config = self.inference_config.clone();
 
         let messages = self.build_messages(conversation_id).await?;
-        let mut response = self.provider.chat_completion(&messages, &tool_defs, &config).await?;
+        let mut response = self
+            .provider
+            .chat_completion(&messages, &tool_defs, &config)
+            .await?;
 
         for _iteration in 0..self.max_iterations {
             match response.stop_reason {
                 StopReason::ToolUse => {
-                    self.store_assistant_message(conversation_id, response.content.clone()).await?;
+                    self.store_assistant_message(conversation_id, response.content.clone())
+                        .await?;
                     let tool_uses = Self::extract_tool_uses(&response.content);
-                    self.execute_and_store_tool_results(conversation_id, tool_uses).await?;
+                    self.execute_and_store_tool_results(conversation_id, tool_uses)
+                        .await?;
 
                     let messages = self.build_messages(conversation_id).await?;
-                    response = self.provider.chat_completion(&messages, &tool_defs, &config).await?;
+                    response = self
+                        .provider
+                        .chat_completion(&messages, &tool_defs, &config)
+                        .await?;
                 }
                 StopReason::EndTurn | StopReason::MaxTokens | StopReason::Unknown(_) => {
-                    self.store_assistant_message(conversation_id, response.content.clone()).await?;
+                    self.store_assistant_message(conversation_id, response.content.clone())
+                        .await?;
                     return Ok(Self::collect_text(&response.content));
                 }
             }
@@ -133,7 +147,8 @@ impl Agent {
             .ok_or_else(|| KovaError::Build("StreamingHandler is required for chat_stream".into()))?
             .clone();
 
-        self.store_user_message(conversation_id, user_message).await?;
+        self.store_user_message(conversation_id, user_message)
+            .await?;
 
         let tool_defs = self.tool_registry.tool_definitions().await;
         let config = self.inference_config.clone();
@@ -159,15 +174,19 @@ impl Agent {
                 StopReason::ToolUse => {
                     let content_blocks =
                         Self::build_tool_use_content(&accumulated.text, &accumulated.tool_calls);
-                    self.store_assistant_message(conversation_id, content_blocks).await?;
+                    self.store_assistant_message(conversation_id, content_blocks)
+                        .await?;
 
                     let tool_uses = Self::parse_streamed_tool_calls(accumulated.tool_calls);
-                    self.execute_and_store_tool_results(conversation_id, tool_uses).await?;
+                    self.execute_and_store_tool_results(conversation_id, tool_uses)
+                        .await?;
                 }
                 StopReason::EndTurn | StopReason::MaxTokens | StopReason::Unknown(_) => {
                     self.store_assistant_message(
                         conversation_id,
-                        vec![ContentBlock::Text { text: accumulated.text.clone() }],
+                        vec![ContentBlock::Text {
+                            text: accumulated.text.clone(),
+                        }],
                     )
                     .await?;
                     handler.on_complete().await?;
@@ -192,15 +211,13 @@ impl Agent {
             .await
     }
 
-    async fn store_user_message(
-        &self,
-        conversation_id: &str,
-        text: &str,
-    ) -> Result<(), KovaError> {
+    async fn store_user_message(&self, conversation_id: &str, text: &str) -> Result<(), KovaError> {
         self.store_message(
             conversation_id,
             Role::User,
-            vec![ContentBlock::Text { text: text.to_string() }],
+            vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
         )
         .await
     }
@@ -210,7 +227,8 @@ impl Agent {
         conversation_id: &str,
         content: Vec<ContentBlock>,
     ) -> Result<(), KovaError> {
-        self.store_message(conversation_id, Role::Assistant, content).await
+        self.store_message(conversation_id, Role::Assistant, content)
+            .await
     }
 
     /// Build the full message list: system prompt (if set) followed by memory history.
@@ -245,7 +263,11 @@ impl Agent {
         content
             .iter()
             .filter_map(|block| {
-                if let ContentBlock::Text { text } = block { Some(text.as_str()) } else { None }
+                if let ContentBlock::Text { text } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -256,13 +278,12 @@ impl Agent {
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
     }
 
-    fn build_tool_use_content(
-        text: &str,
-        tool_calls: &[StreamedToolCall],
-    ) -> Vec<ContentBlock> {
+    fn build_tool_use_content(text: &str, tool_calls: &[StreamedToolCall]) -> Vec<ContentBlock> {
         let mut blocks = Vec::new();
         if !text.is_empty() {
-            blocks.push(ContentBlock::Text { text: text.to_string() });
+            blocks.push(ContentBlock::Text {
+                text: text.to_string(),
+            });
         }
         for call in tool_calls {
             blocks.push(ContentBlock::ToolUse {
@@ -365,7 +386,11 @@ impl Agent {
             self.store_message(
                 conversation_id,
                 Role::Tool,
-                vec![ContentBlock::ToolResult { tool_use_id, content: result_content, is_error }],
+                vec![ContentBlock::ToolResult {
+                    tool_use_id,
+                    content: result_content,
+                    is_error,
+                }],
             )
             .await?;
         }
@@ -392,7 +417,11 @@ impl Agent {
 
                     match &event {
                         StreamEvent::ContentDelta { text } => acc.text.push_str(text),
-                        StreamEvent::ToolUseDelta { id, name, input_delta } => {
+                        StreamEvent::ToolUseDelta {
+                            id,
+                            name,
+                            input_delta,
+                        } => {
                             if !id.is_empty() {
                                 acc.tool_calls.push(StreamedToolCall {
                                     id: id.clone(),
