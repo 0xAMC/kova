@@ -497,10 +497,10 @@ proptest! {
                     .expect("missing tool-role message");
 
                 let (content, is_error) = msg.content.iter().find_map(|b| {
-                    if let ContentBlock::ToolResult { content, is_error, tool_use_id } = b {
-                        if tool_use_id == id {
-                            return Some((content.clone(), *is_error));
-                        }
+                    if let ContentBlock::ToolResult { content, is_error, tool_use_id } = b
+                        && tool_use_id == id
+                    {
+                        return Some((content.clone(), *is_error));
                     }
                     None
                 }).expect("missing ToolResult block");

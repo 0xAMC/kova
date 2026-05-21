@@ -100,7 +100,7 @@ struct HttpConnection {
 
 /// Active connection to an MCP server.
 enum McpConnection {
-    Stdio(StdioConnection),
+    Stdio(Box<StdioConnection>),
     Http(HttpConnection),
 }
 
@@ -145,7 +145,7 @@ impl McpClient {
                 // Send initialize request per MCP protocol.
                 let mut locked = conn;
                 Self::send_stdio_initialize(&mut locked).await?;
-                McpConnection::Stdio(locked)
+                McpConnection::Stdio(Box::new(locked))
             }
             McpTransport::HttpSse { url } => {
                 let client = reqwest::Client::new();
@@ -298,15 +298,15 @@ impl McpClient {
             }
 
             // Try to parse as JSON-RPC response.
-            if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
-                if resp.id == Some(id) {
-                    if let Some(err) = resp.error {
-                        return Err(KovaError::Mcp(format!("MCP error: {}", err.message)));
-                    }
-                    return resp
-                        .result
-                        .ok_or_else(|| KovaError::Mcp("MCP response missing result".into()));
+            if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed)
+                && resp.id == Some(id)
+            {
+                if let Some(err) = resp.error {
+                    return Err(KovaError::Mcp(format!("MCP error: {}", err.message)));
                 }
+                return resp
+                    .result
+                    .ok_or_else(|| KovaError::Mcp("MCP response missing result".into()));
                 // Response for a different id (e.g. notification) — skip.
             }
             // Not valid JSON-RPC — skip (could be log output from the server).

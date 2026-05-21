@@ -232,12 +232,12 @@ proptest! {
                 .map(|_| Arc::new(tokio::sync::Mutex::new(Vec::new())))
                 .collect();
 
-            for i in 0..total {
+            for (i, captured_slot) in post_fail_captures.iter().enumerate() {
                 let name = format!("agent_{}", i);
                 if i == fail_idx {
                     agents_map.insert(name.clone(), build_failing_agent("intentional failure"));
                 } else {
-                    let captured = post_fail_captures[i].clone();
+                    let captured = captured_slot.clone();
                     let provider = Arc::new(CapturingEchoProvider {
                         captured,
                         suffix: format!("_{}", i),
@@ -272,8 +272,8 @@ proptest! {
                 err_msg
             );
 
-            for i in (fail_idx + 1)..total {
-                let captured = post_fail_captures[i].lock().await;
+            for (i, captured_slot) in post_fail_captures.iter().enumerate().skip(fail_idx + 1) {
+                let captured = captured_slot.lock().await;
                 prop_assert!(
                     captured.is_empty(),
                     "agent_{} should not have been invoked after agent_{} failed",
@@ -303,9 +303,9 @@ proptest! {
                 .map(|_| Arc::new(tokio::sync::Mutex::new(Vec::new())))
                 .collect();
 
-            for i in 0..n {
+            for (i, captured_slot) in captures.iter().enumerate() {
                 let name = format!("agent_{}", i);
-                let captured = captures[i].clone();
+                let captured = captured_slot.clone();
                 let provider = Arc::new(CapturingEchoProvider {
                     captured,
                     suffix: format!("_{}", i),
@@ -326,17 +326,14 @@ proptest! {
                 .execute(OrchestratorPattern::Parallel(names), input_ref)
                 .await;
 
-            match &result {
-                Err(e) => {
-                    return Err(proptest::test_runner::TestCaseError::fail(
-                        format!("parallel execution should succeed, got: {}", e),
-                    ));
-                }
-                _ => {}
+            if let Err(e) = &result {
+                return Err(proptest::test_runner::TestCaseError::fail(
+                    format!("parallel execution should succeed, got: {}", e),
+                ));
             }
 
-            for i in 0..n {
-                let captured = captures[i].lock().await;
+            for (i, captured_slot) in captures.iter().enumerate() {
+                let captured = captured_slot.lock().await;
                 prop_assert_eq!(
                     captured.len(),
                     1,

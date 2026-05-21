@@ -259,7 +259,7 @@ async fn test_timeout_returns_timeout_or_connection_error() {
         .mount(&server)
         .await;
 
-    let config = OpenAiProviderConfig::new(&server.uri(), "test-model")
+    let config = OpenAiProviderConfig::new(server.uri(), "test-model")
         .with_timeout(Duration::from_millis(100));
     let provider = Arc::new(OpenAiCompatibleProvider::new(config).unwrap());
 
@@ -291,7 +291,7 @@ async fn test_http_error_propagates_through_agent() {
         .mount(&server)
         .await;
 
-    let config = OpenAiProviderConfig::new(&server.uri(), "test-model");
+    let config = OpenAiProviderConfig::new(server.uri(), "test-model");
     let provider = Arc::new(OpenAiCompatibleProvider::new(config).unwrap());
 
     let agent = AgentBuilder::new()

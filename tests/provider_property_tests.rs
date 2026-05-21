@@ -73,7 +73,7 @@ proptest! {
                 .mount(&server)
                 .await;
 
-            let config = OpenAiProviderConfig::new(&server.uri(), &model_name);
+            let config = OpenAiProviderConfig::new(server.uri(), &model_name);
             let provider = OpenAiCompatibleProvider::new(config).unwrap();
 
             let inference_config = InferenceConfig {
@@ -134,7 +134,7 @@ proptest! {
                 .mount(&server)
                 .await;
 
-            let config = OpenAiProviderConfig::new(&server.uri(), "test-model")
+            let config = OpenAiProviderConfig::new(server.uri(), "test-model")
                 .with_api_key(&api_key);
             let provider = OpenAiCompatibleProvider::new(config).unwrap();
 
@@ -182,7 +182,7 @@ proptest! {
                 .mount(&server)
                 .await;
 
-            let config = OpenAiProviderConfig::new(&server.uri(), "test-model");
+            let config = OpenAiProviderConfig::new(server.uri(), "test-model");
             // No api_key set.
             let provider = OpenAiCompatibleProvider::new(config).unwrap();
 
@@ -237,7 +237,7 @@ proptest! {
                 .mount(&server)
                 .await;
 
-            let config = OpenAiProviderConfig::new(&server.uri(), "test-model");
+            let config = OpenAiProviderConfig::new(server.uri(), "test-model");
             let provider = OpenAiCompatibleProvider::new(config).unwrap();
 
             let inference_config = InferenceConfig {

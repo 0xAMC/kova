@@ -162,17 +162,9 @@ impl TelemetryConfig {
 }
 
 /// Builder for [`TelemetryConfig`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TelemetryConfigBuilder {
     config: TelemetryConfig,
-}
-
-impl Default for TelemetryConfigBuilder {
-    fn default() -> Self {
-        Self {
-            config: TelemetryConfig::default(),
-        }
-    }
 }
 
 impl TelemetryConfigBuilder {

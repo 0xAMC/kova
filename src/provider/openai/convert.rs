@@ -143,10 +143,10 @@ pub(crate) fn format_response(
     let stop_reason = map_finish_reason(choice.finish_reason.as_deref());
 
     let mut content = Vec::new();
-    if let Some(text) = choice.message.content {
-        if !text.is_empty() {
-            content.push(ContentBlock::Text { text });
-        }
+    if let Some(text) = choice.message.content
+        && !text.is_empty()
+    {
+        content.push(ContentBlock::Text { text });
     }
     if let Some(tool_calls) = choice.message.tool_calls {
         for tc in tool_calls {
@@ -194,10 +194,10 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
                 stop_reason: map_finish_reason(Some(reason)),
             });
         }
-        if let Some(text) = &choice.delta.content {
-            if !text.is_empty() {
-                events.push(StreamEvent::ContentDelta { text: text.clone() });
-            }
+        if let Some(text) = &choice.delta.content
+            && !text.is_empty()
+        {
+            events.push(StreamEvent::ContentDelta { text: text.clone() });
         }
         if let Some(tool_calls) = &choice.delta.tool_calls {
             for tc_delta in tool_calls {

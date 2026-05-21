@@ -353,7 +353,7 @@ proptest! {
             proptest::option::of(0.0f32..2.0f32),
         ).prop_map(|(model, max_tokens, temperature)| InferenceConfig { model, max_tokens, temperature }),
     ) {
-        let oai_req = format_request(&[assistant_msg.clone()], &[], &config);
+        let oai_req = format_request(std::slice::from_ref(&assistant_msg), &[], &config);
         prop_assert_eq!(oai_req.messages.len(), 1);
         let oai_msg = &oai_req.messages[0];
         prop_assert_eq!(&oai_msg.role, "assistant");
@@ -397,7 +397,7 @@ proptest! {
 
     #[test]
     fn prop_format_request_text_maps_to_content_field(msg in arb_user_text_message()) {
-        let oai_req = format_request(&[msg.clone()], &[], &InferenceConfig::default());
+        let oai_req = format_request(std::slice::from_ref(&msg), &[], &InferenceConfig::default());
         prop_assert_eq!(oai_req.messages.len(), 1);
         let oai_msg = &oai_req.messages[0];
         let expected_text: String = msg.content.iter().filter_map(|b| {
@@ -411,7 +411,7 @@ proptest! {
     #[test]
     fn prop_format_request_tool_use_maps_to_tool_calls(msg in arb_tool_use_only_assistant()) {
         let (assistant_msg, _stop) = msg;
-        let oai_req = format_request(&[assistant_msg.clone()], &[], &InferenceConfig::default());
+        let oai_req = format_request(std::slice::from_ref(&assistant_msg), &[], &InferenceConfig::default());
         prop_assert_eq!(oai_req.messages.len(), 1);
         let oai_msg = &oai_req.messages[0];
         let expected_tool_uses: Vec<(&str, &str, &serde_json::Value)> = assistant_msg.content.iter().filter_map(|b| {
@@ -431,7 +431,7 @@ proptest! {
 
     #[test]
     fn prop_format_request_tool_result_maps_to_tool_role(msg in arb_tool_result_message()) {
-        let oai_req = format_request(&[msg.clone()], &[], &InferenceConfig::default());
+        let oai_req = format_request(std::slice::from_ref(&msg), &[], &InferenceConfig::default());
         let expected_results: Vec<(&str, &str)> = msg.content.iter().filter_map(|b| {
             if let ContentBlock::ToolResult { tool_use_id, content, .. } = b {
                 Some((tool_use_id.as_str(), content.as_str()))

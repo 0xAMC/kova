@@ -208,7 +208,7 @@ async fn test_chat_completion_timeout() {
             "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             None,
         )
-        .with_endpoint_url(&server.uri())
+        .with_endpoint_url(server.uri())
         .with_timeout(Duration::from_millis(100));
     let provider = BedrockProvider::new(config).await.unwrap();
     let err = provider
@@ -561,7 +561,7 @@ async fn test_chat_completion_stream_truncated_body() {
     // to request more data, but the byte stream ends, so the stream terminates.
     // Depending on implementation, this may just end the stream (no more events)
     // or produce a stream error. Either is acceptable behavior.
-    assert!(results.len() >= 1);
+    assert!(!results.is_empty());
 }
 
 // ── End-to-end integration tests ────────────────────────
