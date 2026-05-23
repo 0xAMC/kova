@@ -1,10 +1,10 @@
 use aws_smithy_eventstream::frame::write_message_to;
 use aws_smithy_types::event_stream::{Header, HeaderValue, Message};
 use futures::StreamExt;
-use kova::error::KovaError;
-use kova::models::*;
-use kova::provider::LlmProvider;
-use kova::provider::bedrock::{BedrockProvider, BedrockProviderConfig};
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
+use kova_sdk::provider::LlmProvider;
+use kova_sdk::provider::bedrock::{BedrockProvider, BedrockProviderConfig};
 use proptest::prelude::*;
 use serde_json::json;
 use std::time::Duration;

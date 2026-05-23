@@ -1,8 +1,8 @@
 # kova
 
-[![Crates.io](https://img.shields.io/crates/v/kova.svg)](https://crates.io/crates/kova)
-[![Docs.rs](https://docs.rs/kova/badge.svg)](https://docs.rs/kova)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Crates.io](https://img.shields.io/crates/v/kova-sdk.svg)](https://crates.io/crates/kova-sdk)
+[![Docs.rs](https://docs.rs/kova-sdk/badge.svg)](https://docs.rs/kova-sdk)
+[![License](https://img.shields.io/crates/l/kova-sdk.svg)](LICENSE)
 
 Async-first Rust library for building LLM-powered agents. Trait-based architecture with pluggable providers, tool calling, memory, streaming, MCP integration, multi-agent orchestration, and telemetry.
 
@@ -10,16 +10,16 @@ Async-first Rust library for building LLM-powered agents. Trait-based architectu
 
 ```toml
 [dependencies]
-kova = "0.1"
+kova-sdk = "0.1"
 
 # With OpenTelemetry tracing
-kova = { version = "0.1", features = ["telemetry"] }
+kova-sdk = { version = "0.1", features = ["telemetry"] }
 ```
 
 Or with cargo:
 
 ```bash
-cargo add kova
+cargo add kova-sdk
 ```
 
 ## Architecture
@@ -42,11 +42,11 @@ kova
 
 ```rust
 use std::sync::Arc;
-use kova::agent::AgentBuilder;
-use kova::provider::openai::{OpenAiCompatibleProvider, OpenAiProviderConfig};
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::provider::openai::{OpenAiCompatibleProvider, OpenAiProviderConfig};
 
 #[tokio::main]
-async fn main() -> Result<(), kova::error::KovaError> {
+async fn main() -> Result<(), kova_sdk::error::KovaError> {
     let config = OpenAiProviderConfig::new("http://127.0.0.1:1234", "my-model");
     let provider = Arc::new(OpenAiCompatibleProvider::new(config)?);
 
@@ -67,8 +67,8 @@ Without the `telemetry` feature, `TelemetryConfig::init()` installs a lightweigh
 
 ```toml
 [dependencies]
-kova = { path = "../kova" }                                    # no OTEL
-kova = { path = "../kova", features = ["telemetry"] }          # with OTEL
+kova-sdk = { path = "../kova" }                                    # no OTEL
+kova-sdk = { path = "../kova", features = ["telemetry"] }          # with OTEL
 ```
 
 ## Documentation

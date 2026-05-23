@@ -4,10 +4,10 @@
 
 use proptest::prelude::*;
 
-use kova::error::KovaError;
-use kova::models::*;
-use kova::provider::LlmProvider;
-use kova::provider::openai::{OpenAiCompatibleProvider, OpenAiProviderConfig};
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
+use kova_sdk::provider::LlmProvider;
+use kova_sdk::provider::openai::{OpenAiCompatibleProvider, OpenAiProviderConfig};
 
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

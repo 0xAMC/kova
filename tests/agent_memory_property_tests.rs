@@ -7,12 +7,12 @@ use async_trait::async_trait;
 use futures::Stream;
 use tokio::sync::Mutex;
 
-use kova::agent::AgentBuilder;
-use kova::error::KovaError;
-use kova::memory::MemoryStore;
-use kova::memory::in_memory::InMemoryStore;
-use kova::models::*;
-use kova::provider::LlmProvider;
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::error::KovaError;
+use kova_sdk::memory::MemoryStore;
+use kova_sdk::memory::in_memory::InMemoryStore;
+use kova_sdk::models::*;
+use kova_sdk::provider::LlmProvider;
 
 struct CapturingMock {
     responses: Vec<ModelResponse>,

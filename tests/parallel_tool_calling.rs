@@ -3,8 +3,8 @@ mod mock;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use kova::agent::AgentBuilder;
-use kova::models::*;
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::models::*;
 
 use mock::provider::{
     CapturingMockProvider, MockLlmProvider, make_text_response, make_tool_call_response,
@@ -25,13 +25,13 @@ async fn parallel_tool_calls_execute_concurrently() {
     let delay = Duration::from_millis(100);
 
     // 5 tools, each with a 100ms delay.
-    let tools: Vec<Arc<dyn kova::tool::Tool>> = (0..5)
+    let tools: Vec<Arc<dyn kova_sdk::tool::Tool>> = (0..5)
         .map(|i| {
             Arc::new(MockTool::with_delay(
                 &format!("tool_{i}"),
                 &format!("result_{i}"),
                 delay,
-            )) as Arc<dyn kova::tool::Tool>
+            )) as Arc<dyn kova_sdk::tool::Tool>
         })
         .collect();
 
@@ -155,13 +155,13 @@ async fn parallel_tool_calls_semaphore_limits_concurrency() {
     let delay = Duration::from_millis(100);
 
     // 5 tools, each with a 100ms delay.
-    let tools: Vec<Arc<dyn kova::tool::Tool>> = (0..5)
+    let tools: Vec<Arc<dyn kova_sdk::tool::Tool>> = (0..5)
         .map(|i| {
             Arc::new(MockTool::with_delay(
                 &format!("sem_tool_{i}"),
                 &format!("result_{i}"),
                 delay,
-            )) as Arc<dyn kova::tool::Tool>
+            )) as Arc<dyn kova_sdk::tool::Tool>
         })
         .collect();
 

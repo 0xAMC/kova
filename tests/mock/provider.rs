@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use futures::Stream;
 use tokio::sync::Mutex;
 
-use kova::error::KovaError;
-use kova::models::*;
-use kova::provider::LlmProvider;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
+use kova_sdk::provider::LlmProvider;
 
 /// A mock LLM provider that returns configurable responses.
 ///

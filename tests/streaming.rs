@@ -6,11 +6,11 @@ use async_trait::async_trait;
 use futures::stream;
 use tokio::sync::Mutex;
 
-use kova::agent::AgentBuilder;
-use kova::error::KovaError;
-use kova::models::*;
-use kova::provider::LlmProvider;
-use kova::streaming::StreamingHandler;
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
+use kova_sdk::provider::LlmProvider;
+use kova_sdk::streaming::StreamingHandler;
 
 // ── MockStreamingHandler ───────────────────────────────────────────
 
