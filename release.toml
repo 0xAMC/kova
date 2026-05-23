@@ -1,0 +1,6 @@
+# cargo-release config
+# Publishing is handled by GitHub Actions on tag push — never publish locally.
+publish = false
+push = false
+sign-commit = false
+sign-tag = false
