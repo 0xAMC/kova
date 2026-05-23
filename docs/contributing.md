@@ -21,9 +21,9 @@
 Implement the `Tool` trait:
 
 ```rust
-use kova::tool::Tool;
-use kova::models::ToolResult;
-use kova::error::KovaError;
+use kova_sdk::tool::Tool;
+use kova_sdk::models::ToolResult;
+use kova_sdk::error::KovaError;
 use async_trait::async_trait;
 use serde_json::Value;
 
@@ -55,13 +55,13 @@ registry.register(Arc::new(MyTool)).await;
 cargo test --workspace
 
 # Library only
-cargo test -p kova
+cargo test -p kova-sdk
 
 # With OTEL telemetry feature
-cargo test -p kova --features telemetry
+cargo test -p kova-sdk --features telemetry
 
 # Property-based tests (proptest)
-cargo test -p kova property
+cargo test -p kova-sdk property
 ```
 
 ## Test Structure

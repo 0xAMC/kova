@@ -1,8 +1,8 @@
 use proptest::prelude::*;
 use std::time::Duration;
 
-use kova::error::KovaError;
-use kova::models::*;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
 
 fn arb_role() -> impl Strategy<Value = Role> {
     prop_oneof![

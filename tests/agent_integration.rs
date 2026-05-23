@@ -2,9 +2,9 @@ mod mock;
 
 use std::sync::Arc;
 
-use kova::agent::AgentBuilder;
-use kova::error::KovaError;
-use kova::models::*;
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
 
 use mock::provider::{MockLlmProvider, make_text_response};
 
@@ -110,6 +110,6 @@ fn agent_builder_succeeds_with_provider() {
 fn _assert_send_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
 
-    assert_send_sync::<kova::agent::Agent>();
-    assert_send_sync::<kova::provider::openai::OpenAiCompatibleProvider>();
+    assert_send_sync::<kova_sdk::agent::Agent>();
+    assert_send_sync::<kova_sdk::provider::openai::OpenAiCompatibleProvider>();
 }

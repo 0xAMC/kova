@@ -8,11 +8,11 @@ use futures::Stream;
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use kova::agent::AgentBuilder;
-use kova::error::KovaError;
-use kova::models::*;
-use kova::provider::LlmProvider;
-use kova::tool::Tool;
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
+use kova_sdk::provider::LlmProvider;
+use kova_sdk::tool::Tool;
 
 struct CapturingMock {
     responses: Vec<ModelResponse>,

@@ -4,9 +4,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use kova::error::KovaError;
-use kova::models::*;
-use kova::streaming::StreamingHandler;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
+use kova_sdk::streaming::StreamingHandler;
 
 fn arb_stop_reason() -> impl Strategy<Value = StopReason> {
     prop_oneof![

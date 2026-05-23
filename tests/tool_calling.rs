@@ -2,9 +2,9 @@ mod mock;
 
 use std::sync::Arc;
 
-use kova::agent::AgentBuilder;
-use kova::error::KovaError;
-use kova::models::*;
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
 
 use mock::provider::{
     CapturingMockProvider, MockLlmProvider, make_text_response, make_tool_call_response,

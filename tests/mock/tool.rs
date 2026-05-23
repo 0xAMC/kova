@@ -4,9 +4,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use kova::error::KovaError;
-use kova::models::ToolResult;
-use kova::tool::Tool;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::ToolResult;
+use kova_sdk::tool::Tool;
 
 /// A configurable mock tool for integration tests.
 ///

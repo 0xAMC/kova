@@ -7,11 +7,11 @@ use std::time::Duration;
 use async_trait::async_trait;
 use futures::Stream;
 
-use kova::agent::AgentBuilder;
-use kova::error::KovaError;
-use kova::models::*;
-use kova::orchestrator::{Orchestrator, OrchestratorOutput, OrchestratorPattern};
-use kova::provider::LlmProvider;
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
+use kova_sdk::orchestrator::{Orchestrator, OrchestratorOutput, OrchestratorPattern};
+use kova_sdk::provider::LlmProvider;
 
 struct SuffixProvider {
     suffix: String,
@@ -140,7 +140,7 @@ impl LlmProvider for CapturingEchoProvider {
     }
 }
 
-fn build_suffix_agent(suffix: &str) -> Arc<kova::agent::Agent> {
+fn build_suffix_agent(suffix: &str) -> Arc<kova_sdk::agent::Agent> {
     let provider = Arc::new(SuffixProvider {
         suffix: suffix.to_string(),
     });
@@ -152,7 +152,7 @@ fn build_suffix_agent(suffix: &str) -> Arc<kova::agent::Agent> {
     )
 }
 
-fn build_failing_agent(msg: &str) -> Arc<kova::agent::Agent> {
+fn build_failing_agent(msg: &str) -> Arc<kova_sdk::agent::Agent> {
     let provider = Arc::new(FailingProvider {
         message: msg.to_string(),
     });

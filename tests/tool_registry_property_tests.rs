@@ -4,10 +4,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::json;
 
-use kova::error::KovaError;
-use kova::models::ToolResult;
-use kova::tool::Tool;
-use kova::tool::registry::ToolRegistry;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::ToolResult;
+use kova_sdk::tool::Tool;
+use kova_sdk::tool::registry::ToolRegistry;
 
 struct PropTool {
     tool_name: String,

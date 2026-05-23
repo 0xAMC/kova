@@ -1,9 +1,9 @@
 use proptest::prelude::*;
 use std::sync::Arc;
 
-use kova::mcp::tool::McpTool;
-use kova::mcp::{McpClient, McpToolDefinition};
-use kova::tool::Tool;
+use kova_sdk::mcp::tool::McpTool;
+use kova_sdk::mcp::{McpClient, McpToolDefinition};
+use kova_sdk::tool::Tool;
 
 fn arb_mcp_tool_definition() -> impl Strategy<Value = McpToolDefinition> {
     (
