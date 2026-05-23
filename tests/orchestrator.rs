@@ -57,7 +57,9 @@ impl kova_sdk::provider::LlmProvider for FailingMockProvider {
         _config: &kova_sdk::models::InferenceConfig,
     ) -> Result<
         std::pin::Pin<
-            Box<dyn futures::Stream<Item = Result<kova_sdk::models::StreamEvent, KovaError>> + Send>,
+            Box<
+                dyn futures::Stream<Item = Result<kova_sdk::models::StreamEvent, KovaError>> + Send,
+            >,
         >,
         KovaError,
     > {
@@ -94,7 +96,9 @@ impl kova_sdk::provider::LlmProvider for SlowMockProvider {
         _config: &kova_sdk::models::InferenceConfig,
     ) -> Result<
         std::pin::Pin<
-            Box<dyn futures::Stream<Item = Result<kova_sdk::models::StreamEvent, KovaError>> + Send>,
+            Box<
+                dyn futures::Stream<Item = Result<kova_sdk::models::StreamEvent, KovaError>> + Send,
+            >,
         >,
         KovaError,
     > {
