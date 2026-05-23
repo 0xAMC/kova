@@ -4,9 +4,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use kova::agent::{Agent, AgentBuilder};
-use kova::error::KovaError;
-use kova::orchestrator::{Orchestrator, OrchestratorOutput, OrchestratorPattern};
+use kova_sdk::agent::{Agent, AgentBuilder};
+use kova_sdk::error::KovaError;
+use kova_sdk::orchestrator::{Orchestrator, OrchestratorOutput, OrchestratorPattern};
 
 use mock::provider::{MockLlmProvider, make_text_response};
 
@@ -37,13 +37,13 @@ fn build_slow_agent(delay: Duration, text: &str) -> Arc<Agent> {
 struct FailingMockProvider;
 
 #[async_trait::async_trait]
-impl kova::provider::LlmProvider for FailingMockProvider {
+impl kova_sdk::provider::LlmProvider for FailingMockProvider {
     async fn chat_completion(
         &self,
-        _messages: &[kova::models::ConversationMessage],
-        _tools: &[kova::models::ToolDefinition],
-        _config: &kova::models::InferenceConfig,
-    ) -> Result<kova::models::ModelResponse, KovaError> {
+        _messages: &[kova_sdk::models::ConversationMessage],
+        _tools: &[kova_sdk::models::ToolDefinition],
+        _config: &kova_sdk::models::InferenceConfig,
+    ) -> Result<kova_sdk::models::ModelResponse, KovaError> {
         Err(KovaError::Provider {
             message: "intentional failure".into(),
             status_code: Some(500),
@@ -52,19 +52,19 @@ impl kova::provider::LlmProvider for FailingMockProvider {
 
     async fn chat_completion_stream(
         &self,
-        _messages: &[kova::models::ConversationMessage],
-        _tools: &[kova::models::ToolDefinition],
-        _config: &kova::models::InferenceConfig,
+        _messages: &[kova_sdk::models::ConversationMessage],
+        _tools: &[kova_sdk::models::ToolDefinition],
+        _config: &kova_sdk::models::InferenceConfig,
     ) -> Result<
         std::pin::Pin<
-            Box<dyn futures::Stream<Item = Result<kova::models::StreamEvent, KovaError>> + Send>,
+            Box<dyn futures::Stream<Item = Result<kova_sdk::models::StreamEvent, KovaError>> + Send>,
         >,
         KovaError,
     > {
         Err(KovaError::Stream("not implemented".into()))
     }
 
-    async fn list_models(&self) -> Result<Vec<kova::models::ModelInfo>, KovaError> {
+    async fn list_models(&self) -> Result<Vec<kova_sdk::models::ModelInfo>, KovaError> {
         Ok(vec![])
     }
 }
@@ -72,36 +72,36 @@ impl kova::provider::LlmProvider for FailingMockProvider {
 /// A provider that sleeps before returning a response.
 struct SlowMockProvider {
     delay: Duration,
-    response: kova::models::ModelResponse,
+    response: kova_sdk::models::ModelResponse,
 }
 
 #[async_trait::async_trait]
-impl kova::provider::LlmProvider for SlowMockProvider {
+impl kova_sdk::provider::LlmProvider for SlowMockProvider {
     async fn chat_completion(
         &self,
-        _messages: &[kova::models::ConversationMessage],
-        _tools: &[kova::models::ToolDefinition],
-        _config: &kova::models::InferenceConfig,
-    ) -> Result<kova::models::ModelResponse, KovaError> {
+        _messages: &[kova_sdk::models::ConversationMessage],
+        _tools: &[kova_sdk::models::ToolDefinition],
+        _config: &kova_sdk::models::InferenceConfig,
+    ) -> Result<kova_sdk::models::ModelResponse, KovaError> {
         tokio::time::sleep(self.delay).await;
         Ok(self.response.clone())
     }
 
     async fn chat_completion_stream(
         &self,
-        _messages: &[kova::models::ConversationMessage],
-        _tools: &[kova::models::ToolDefinition],
-        _config: &kova::models::InferenceConfig,
+        _messages: &[kova_sdk::models::ConversationMessage],
+        _tools: &[kova_sdk::models::ToolDefinition],
+        _config: &kova_sdk::models::InferenceConfig,
     ) -> Result<
         std::pin::Pin<
-            Box<dyn futures::Stream<Item = Result<kova::models::StreamEvent, KovaError>> + Send>,
+            Box<dyn futures::Stream<Item = Result<kova_sdk::models::StreamEvent, KovaError>> + Send>,
         >,
         KovaError,
     > {
         Err(KovaError::Stream("not implemented".into()))
     }
 
-    async fn list_models(&self) -> Result<Vec<kova::models::ModelInfo>, KovaError> {
+    async fn list_models(&self) -> Result<Vec<kova_sdk::models::ModelInfo>, KovaError> {
         Ok(vec![])
     }
 }

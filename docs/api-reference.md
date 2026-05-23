@@ -50,7 +50,7 @@ agent.chat_stream(conversation_id: &str, user_message: &str) -> Result<String, K
 ### OpenAI-Compatible
 
 ```rust
-use kova::provider::openai::{OpenAiCompatibleProvider, OpenAiProviderConfig};
+use kova_sdk::provider::openai::{OpenAiCompatibleProvider, OpenAiProviderConfig};
 use std::time::Duration;
 
 let config = OpenAiProviderConfig::new("https://api.openai.com", "gpt-4")
@@ -81,7 +81,7 @@ let provider = Arc::new(OpenAiCompatibleProvider::new(config)?);
 ### AWS Bedrock
 
 ```rust
-use kova::provider::bedrock::{BedrockProvider, BedrockProviderConfig};
+use kova_sdk::provider::bedrock::{BedrockProvider, BedrockProviderConfig};
 
 // Default credential chain
 let config = BedrockProviderConfig::new("us-east-1", "anthropic.claude-sonnet-4-20250514-v1:0");
@@ -116,9 +116,9 @@ let config = BedrockProviderConfig::new("us-east-1", "my-model")
 ### Custom Provider
 
 ```rust
-use kova::provider::LlmProvider;
-use kova::models::*;
-use kova::error::KovaError;
+use kova_sdk::provider::LlmProvider;
+use kova_sdk::models::*;
+use kova_sdk::error::KovaError;
 use async_trait::async_trait;
 use std::pin::Pin;
 use futures::Stream;
@@ -150,9 +150,9 @@ impl LlmProvider for MyProvider {
 ### Defining a Tool
 
 ```rust
-use kova::tool::Tool;
-use kova::models::ToolResult;
-use kova::error::KovaError;
+use kova_sdk::tool::Tool;
+use kova_sdk::models::ToolResult;
+use kova_sdk::error::KovaError;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -181,7 +181,7 @@ impl Tool for GetWeather {
 ### ToolRegistry
 
 ```rust
-use kova::tool::registry::ToolRegistry;
+use kova_sdk::tool::registry::ToolRegistry;
 
 let registry = ToolRegistry::new();
 registry.register(Arc::new(GetWeather)).await;
@@ -194,7 +194,7 @@ let defs  = registry.tool_definitions().await;           // Vec<ToolDefinition> 
 ## Memory
 
 ```rust
-use kova::memory::in_memory::InMemoryStore;
+use kova_sdk::memory::in_memory::InMemoryStore;
 
 let store = InMemoryStore::new();                   // Unbounded
 let store = InMemoryStore::with_max_messages(100);  // Capped; preserves system prompt on truncation
@@ -205,7 +205,7 @@ Pass to the builder: `.memory(Arc::new(store))`.
 ## MCP
 
 ```rust
-use kova::mcp::{McpClient, McpTransport};
+use kova_sdk::mcp::{McpClient, McpTransport};
 
 // Stdio transport (spawn subprocess)
 let client = Arc::new(McpClient::connect(McpTransport::Stdio {
@@ -232,9 +232,9 @@ let agent = AgentBuilder::new()
 ## Streaming
 
 ```rust
-use kova::streaming::StreamingHandler;
-use kova::models::StreamEvent;
-use kova::error::KovaError;
+use kova_sdk::streaming::StreamingHandler;
+use kova_sdk::models::StreamEvent;
+use kova_sdk::error::KovaError;
 use async_trait::async_trait;
 
 struct MyHandler;
@@ -260,7 +260,7 @@ let text = agent.chat_stream("conv-1", "Tell me a story").await?;
 ## Orchestrator
 
 ```rust
-use kova::orchestrator::{Orchestrator, OrchestratorPattern, OrchestratorOutput};
+use kova_sdk::orchestrator::{Orchestrator, OrchestratorPattern, OrchestratorOutput};
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -298,7 +298,7 @@ orch.execute(
 ## Telemetry
 
 ```rust
-use kova::telemetry::{TelemetryConfig, ExporterConfig, OtlpProtocol};
+use kova_sdk::telemetry::{TelemetryConfig, ExporterConfig, OtlpProtocol};
 
 // Basic (no telemetry feature needed)
 TelemetryConfig::builder().log_level(tracing::Level::DEBUG).build().init()?;
@@ -315,7 +315,7 @@ TelemetryConfig::builder()
     .init()?;
 
 // MetricsCollector — always available
-use kova::telemetry::MetricsCollector;
+use kova_sdk::telemetry::MetricsCollector;
 
 let m = MetricsCollector::new();
 m.record_llm_request(150.0, 100, 50);   // latency_ms, input_tokens, output_tokens
@@ -330,7 +330,7 @@ println!("errors:   {}", m.error_count());
 ## Error Handling
 
 ```rust
-use kova::error::KovaError;
+use kova_sdk::error::KovaError;
 
 match result {
     Err(KovaError::Provider { message, status_code }) => { /* LLM API error */ }

@@ -1,5 +1,5 @@
 [package]
-name = "kova"
+name = "kova-sdk"
 version = "0.1.0"
 edition = "2024"
 description = "Async-first Rust library for building LLM-powered agents with tool calling, streaming, MCP, and multi-agent orchestration"
@@ -7,7 +7,7 @@ license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/0xAMC/kova"
 homepage = "https://github.com/0xAMC/kova"
-documentation = "https://docs.rs/kova"
+documentation = "https://docs.rs/kova-sdk"
 keywords = ["llm", "agent", "ai", "mcp", "openai"]
 categories = ["api-bindings", "asynchronous", "web-programming"]
 

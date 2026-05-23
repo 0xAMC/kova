@@ -12,12 +12,12 @@ use async_trait::async_trait;
 use futures::Stream;
 use tokio::sync::Mutex;
 
-use kova::agent::AgentBuilder;
-use kova::error::KovaError;
-use kova::models::*;
-use kova::provider::LlmProvider;
-use kova::telemetry::MetricsCollector;
-use kova::tool::Tool;
+use kova_sdk::agent::AgentBuilder;
+use kova_sdk::error::KovaError;
+use kova_sdk::models::*;
+use kova_sdk::provider::LlmProvider;
+use kova_sdk::telemetry::MetricsCollector;
+use kova_sdk::tool::Tool;
 
 // ── Shared mock infrastructure ─────────────────────────────────────
 
@@ -482,7 +482,7 @@ proptest! {
 
 #[test]
 fn prop29_log_level_filtering_config_propagation() {
-    use kova::telemetry::TelemetryConfig;
+    use kova_sdk::telemetry::TelemetryConfig;
 
     let levels = [
         tracing::Level::TRACE,

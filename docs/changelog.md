@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the `kova` library are documented here.
+All notable changes to the `kova-sdk` library are documented here.
 
 ## 0.1.0 — Initial release
 
