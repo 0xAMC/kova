@@ -28,6 +28,11 @@ pub(crate) struct OaiFunctionCall {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct OaiStreamOptions {
+    pub(crate) include_usage: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct OaiChatCompletionRequest {
     pub(crate) model: String,
     pub(crate) messages: Vec<OaiMessage>,
@@ -39,6 +44,8 @@ pub(crate) struct OaiChatCompletionRequest {
     pub(crate) temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stream_options: Option<OaiStreamOptions>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,6 +95,8 @@ pub(crate) struct OaiResponseChunk {
     pub(crate) created: u64,
     pub(crate) model: String,
     pub(crate) choices: Vec<OaiChunkChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) usage: Option<OaiUsage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

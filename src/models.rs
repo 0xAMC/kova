@@ -49,6 +49,17 @@ pub enum StopReason {
     Unknown(String),
 }
 
+impl StopReason {
+    pub fn as_str(&self) -> &str {
+        match self {
+            StopReason::EndTurn => "end_turn",
+            StopReason::ToolUse => "tool_use",
+            StopReason::MaxTokens => "max_tokens",
+            StopReason::Unknown(s) => s.as_str(),
+        }
+    }
+}
+
 // ── Usage Stats ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -99,6 +110,10 @@ pub enum StreamEvent {
     },
     StopEvent {
         stop_reason: StopReason,
+    },
+    UsageEvent {
+        input_tokens: u32,
+        output_tokens: u32,
     },
     Error {
         message: String,
