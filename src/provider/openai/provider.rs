@@ -6,7 +6,7 @@ use reqwest::Client;
 
 use super::config::OpenAiProviderConfig;
 use super::convert::{format_request, format_response, sse_byte_stream_to_events};
-use super::types::{OaiChatCompletionResponse, OaiModelListResponse};
+use super::types::{OaiChatCompletionResponse, OaiModelListResponse, OaiStreamOptions};
 use crate::error::KovaError;
 use crate::models::{
     ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, StreamEvent, ToolDefinition,
@@ -64,6 +64,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             otel.status_code = tracing::field::Empty,
             llm.input_tokens = tracing::field::Empty,
             llm.output_tokens = tracing::field::Empty,
+            llm.stop_reason = tracing::field::Empty,
         );
         let _guard = span.enter();
 
@@ -107,6 +108,12 @@ impl LlmProvider for OpenAiCompatibleProvider {
             tracing::Span::current().record("llm.input_tokens", usage.prompt_tokens);
             tracing::Span::current().record("llm.output_tokens", usage.completion_tokens);
         }
+        let finish_reason = oai_response
+            .choices
+            .first()
+            .and_then(|c| c.finish_reason.as_deref())
+            .unwrap_or("unknown");
+        tracing::Span::current().record("llm.stop_reason", finish_reason);
         tracing::info!(latency_ms, "LLM chat completion succeeded");
 
         format_response(oai_response)
@@ -130,6 +137,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let merged = self.merge_config(config);
         let mut oai_request = format_request(messages, tools, &merged);
         oai_request.stream = Some(true);
+        oai_request.stream_options = Some(OaiStreamOptions {
+            include_usage: true,
+        });
 
         let url = self.config.chat_completions_url();
         let req = self.apply_auth(self.client.post(&url).json(&oai_request));

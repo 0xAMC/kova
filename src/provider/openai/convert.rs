@@ -115,6 +115,7 @@ pub(crate) fn format_request(
         max_tokens: config.max_tokens,
         temperature: config.temperature,
         stream: None,
+        stream_options: None,
     }
 }
 
@@ -187,6 +188,13 @@ fn map_finish_reason(reason: Option<&str>) -> StopReason {
 
 pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
     let mut events = Vec::new();
+
+    if let Some(usage) = chunk.usage {
+        events.push(StreamEvent::UsageEvent {
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+        });
+    }
 
     for choice in chunk.choices {
         if let Some(reason) = &choice.finish_reason {

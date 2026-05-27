@@ -162,6 +162,7 @@ impl LlmProvider for BedrockProvider {
             otel.status_code = tracing::field::Empty,
             llm.input_tokens = tracing::field::Empty,
             llm.output_tokens = tracing::field::Empty,
+            llm.stop_reason = tracing::field::Empty,
         );
         let _guard = span.enter();
 
@@ -213,6 +214,7 @@ impl LlmProvider for BedrockProvider {
 
         tracing::Span::current().record("llm.input_tokens", bedrock_response.usage.input_tokens);
         tracing::Span::current().record("llm.output_tokens", bedrock_response.usage.output_tokens);
+        tracing::Span::current().record("llm.stop_reason", bedrock_response.stop_reason.as_str());
         tracing::info!("Bedrock chat completion succeeded");
 
         format_response(bedrock_response)

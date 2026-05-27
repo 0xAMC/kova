@@ -191,7 +191,11 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
         BedrockStreamEvent::MessageStop { stop_reason } => Some(StreamEvent::StopEvent {
             stop_reason: map_stop_reason(&stop_reason),
         }),
-        BedrockStreamEvent::ContentBlockStop { .. } | BedrockStreamEvent::Metadata { .. } => None,
+        BedrockStreamEvent::ContentBlockStop { .. } => None,
+        BedrockStreamEvent::Metadata { usage } => Some(StreamEvent::UsageEvent {
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+        }),
     }
 }
 

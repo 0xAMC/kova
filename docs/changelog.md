@@ -2,6 +2,18 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
+## Unreleased
+
+### Added
+- `StreamEvent::UsageEvent { input_tokens, output_tokens }` — both OpenAI-compatible and Bedrock providers now emit this event during streaming so callers can track token consumption per call.
+- `StopReason::as_str()` helper for span attribute recording.
+- `TelemetryConfig::service_name` field (default `"kova"`) and corresponding `TelemetryConfigBuilder::service_name()` builder method — sets the `service.name` OTEL resource attribute on all exporter backends.
+- `llm.input_tokens`, `llm.output_tokens`, `llm.stop_reason`, and `llm.iterations` span attributes recorded on `agent.chat`, `agent.chat_stream`, and per-call `llm.chat_completion_stream` child spans.
+- `OaiStreamOptions { include_usage: true }` sent on streaming requests to OpenAI-compatible providers to surface token counts in stream chunks.
+
+### Changed
+- Bedrock `BedrockStreamEvent::Metadata` now maps to `StreamEvent::UsageEvent` instead of being silently dropped.
+
 ## 0.1.0 — Initial release
 
 ### Added

@@ -108,6 +108,7 @@ fn arb_bedrock_stream_event() -> impl Strategy<Value = BedrockStreamEvent> {
 }
 
 fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEvent, StreamEvent)> {
+    use super::super::types::BedrockUsage;
     prop_oneof![
         (0u32..100u32, arb_text()).prop_map(|(idx, text)| {
             let event = BedrockStreamEvent::ContentBlockDelta {
@@ -152,6 +153,20 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
             };
             let expected = StreamEvent::StopEvent {
                 stop_reason: map_stop_reason(&stop_reason),
+            };
+            (event, expected)
+        }),
+        (1u32..1000u32, 1u32..1000u32).prop_map(|(input_tokens, output_tokens)| {
+            let event = BedrockStreamEvent::Metadata {
+                usage: BedrockUsage {
+                    input_tokens,
+                    output_tokens,
+                    total_tokens: input_tokens + output_tokens,
+                },
+            };
+            let expected = StreamEvent::UsageEvent {
+                input_tokens,
+                output_tokens,
             };
             (event, expected)
         }),
@@ -575,7 +590,7 @@ fn test_format_stream_event_content_block_stop_ignored() {
 }
 
 #[test]
-fn test_format_stream_event_metadata_ignored() {
+fn test_format_stream_event_metadata_emits_usage() {
     use super::super::types::BedrockUsage;
     let event = BedrockStreamEvent::Metadata {
         usage: BedrockUsage {
@@ -584,5 +599,11 @@ fn test_format_stream_event_metadata_ignored() {
             total_tokens: 15,
         },
     };
-    assert!(format_stream_event(event).is_none());
+    assert_eq!(
+        format_stream_event(event),
+        Some(StreamEvent::UsageEvent {
+            input_tokens: 10,
+            output_tokens: 5,
+        })
+    );
 }
