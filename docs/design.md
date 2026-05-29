@@ -42,6 +42,7 @@ chat(conversation_id, user_message)
        │    └─ continue loop
        │
        ├─ StopReason::EndTurn | MaxTokens | Unknown?
+       │    ├─ store input_tokens in last_turn_input_tokens (AtomicU32) if provider reports usage
        │    └─ store assistant message + return text
        │
        └─ loop limit hit → Err(KovaError::MaxIterations)
@@ -130,6 +131,7 @@ Internal synchronisation primitives:
 | `InMemoryStore` | `RwLock` | Many reads, sequential append |
 | `McpClient` | `Mutex` | Ordered JSON-RPC request/response |
 | Tool parallelism | `Semaphore` | Bounded fan-out |
+| `last_turn_input_tokens` | `AtomicU32` | Lock-free token counter read from any thread |
 
 ## Telemetry Design
 

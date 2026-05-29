@@ -2,6 +2,7 @@ mod builder;
 pub use builder::AgentBuilder;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use futures::StreamExt;
 use futures::future::join_all;
@@ -34,10 +35,20 @@ pub struct Agent {
     streaming_handler: Option<Arc<dyn StreamingHandler>>,
     approval_handler: Option<Arc<dyn ToolApprovalHandler>>,
     lifecycle_hook: Option<Arc<dyn ToolLifecycleHook>>,
+    /// Input tokens reported by the provider for the most recent completed turn.
+    last_turn_input_tokens: Arc<AtomicU32>,
 }
 
 impl Agent {
     // ── Public API ────────────────────────────────────────────────────
+
+    /// Input tokens reported by the provider for the most recently completed turn.
+    ///
+    /// Returns 0 until the first successful turn completes or if the provider
+    /// does not report usage statistics. Updated atomically after every turn.
+    pub fn last_turn_input_tokens(&self) -> u32 {
+        self.last_turn_input_tokens.load(Ordering::Relaxed)
+    }
 
     /// Send a user message and return the assistant's response text.
     ///
@@ -134,6 +145,10 @@ impl Agent {
                     let span = tracing::Span::current();
                     span.record("llm.stop_reason", response.stop_reason.as_str());
                     span.record("llm.iterations", iterations);
+                    if let Some(usage) = &response.usage {
+                        self.last_turn_input_tokens
+                            .store(usage.input_tokens, Ordering::Relaxed);
+                    }
                     self.store_assistant_message(conversation_id, response.content.clone())
                         .await?;
                     return Ok(Self::collect_text(&response.content));
@@ -222,6 +237,9 @@ impl Agent {
                     let span = tracing::Span::current();
                     span.record("llm.stop_reason", accumulated.stop_reason.as_str());
                     span.record("llm.iterations", iterations);
+                    if let Some(tokens) = accumulated.input_tokens {
+                        self.last_turn_input_tokens.store(tokens, Ordering::Relaxed);
+                    }
                     self.store_assistant_message(
                         conversation_id,
                         vec![ContentBlock::Text {

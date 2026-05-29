@@ -5,6 +5,7 @@ All notable changes to the `kova-sdk` library are documented here.
 ## Unreleased
 
 ### Added
+- `Agent::last_turn_input_tokens() -> u32` — returns the input token count reported by the provider for the most recently completed turn (both `chat` and `chat_stream` paths). Returns `0` until the first turn completes or if the provider does not report usage. Updated atomically after every turn via `Arc<AtomicU32>`.
 - `StreamEvent::UsageEvent { input_tokens, output_tokens }` — both OpenAI-compatible and Bedrock providers now emit this event during streaming so callers can track token consumption per call.
 - `StopReason::as_str()` helper for span attribute recording.
 - `TelemetryConfig::service_name` field (default `"kova"`) and corresponding `TelemetryConfigBuilder::service_name()` builder method — sets the `service.name` OTEL resource attribute on all exporter backends.
