@@ -43,6 +43,11 @@ agent.chat(conversation_id: &str, user_message: &str) -> Result<String, KovaErro
 
 // Streaming response — delivers chunks to StreamingHandler, returns full text
 agent.chat_stream(conversation_id: &str, user_message: &str) -> Result<String, KovaError>
+
+// Input tokens reported by the provider for the most recently completed turn.
+// Returns 0 until the first turn completes or if the provider does not report usage.
+// Updated atomically after every turn; safe to call from any thread concurrently.
+agent.last_turn_input_tokens() -> u32
 ```
 
 ## Providers
@@ -364,5 +369,5 @@ match result {
 | `InferenceConfig` | `model`, `max_tokens`, `temperature` (all `Option`) |
 | `ToolDefinition` | `name`, `description`, `parameters` (JSON Schema `Value`) |
 | `ToolResult` | `content: String`, `is_error: bool` |
-| `StreamEvent` | `ContentDelta { text }`, `ToolUseDelta { … }`, `StopEvent`, `Error` |
+| `StreamEvent` | `ContentDelta { text }`, `ToolUseDelta { … }`, `StopEvent`, `Error`, `UsageEvent { input_tokens, output_tokens }` |
 | `ModelInfo` | `id`, `object`, `created`, `owned_by` |
