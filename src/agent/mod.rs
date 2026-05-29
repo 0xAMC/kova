@@ -308,7 +308,10 @@ impl Agent {
         content
             .iter()
             .filter_map(|block| {
-                if let ContentBlock::ToolUse { id, name, input, .. } = block {
+                if let ContentBlock::ToolUse {
+                    id, name, input, ..
+                } = block
+                {
                     Some((id.clone(), name.clone(), input.clone()))
                 } else {
                     None

@@ -268,8 +268,7 @@ mod tests {
     }
 
     fn provider_for(server: &MockServer, api_key: Option<&str>) -> GeminiProvider {
-        let mut cfg = GeminiProviderConfig::new("gemini-2.0-flash")
-            .with_base_url(server.uri());
+        let mut cfg = GeminiProviderConfig::new("gemini-2.0-flash").with_base_url(server.uri());
         if let Some(k) = api_key {
             cfg = cfg.with_api_key(k);
         }
@@ -287,7 +286,12 @@ mod tests {
             .await;
 
         let provider = provider_for(&server, Some("my-key"));
-        assert!(provider.chat_completion(&sample_messages(), &[], &sample_config()).await.is_ok());
+        assert!(
+            provider
+                .chat_completion(&sample_messages(), &[], &sample_config())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -300,7 +304,12 @@ mod tests {
             .await;
 
         let provider = provider_for(&server, None);
-        assert!(provider.chat_completion(&sample_messages(), &[], &sample_config()).await.is_ok());
+        assert!(
+            provider
+                .chat_completion(&sample_messages(), &[], &sample_config())
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]
@@ -316,7 +325,13 @@ mod tests {
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
             .unwrap_err();
-        assert!(matches!(err, KovaError::Provider { status_code: Some(400), .. }));
+        assert!(matches!(
+            err,
+            KovaError::Provider {
+                status_code: Some(400),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -332,7 +347,13 @@ mod tests {
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
             .unwrap_err();
-        assert!(matches!(err, KovaError::Provider { status_code: Some(429), .. }));
+        assert!(matches!(
+            err,
+            KovaError::Provider {
+                status_code: Some(429),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -348,7 +369,13 @@ mod tests {
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
             .unwrap_err();
-        assert!(matches!(err, KovaError::Provider { status_code: Some(500), .. }));
+        assert!(matches!(
+            err,
+            KovaError::Provider {
+                status_code: Some(500),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -398,7 +425,13 @@ mod tests {
             .await;
 
         let err = provider_for(&server, None).list_models().await.unwrap_err();
-        assert!(matches!(err, KovaError::Provider { status_code: Some(503), .. }));
+        assert!(matches!(
+            err,
+            KovaError::Provider {
+                status_code: Some(503),
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

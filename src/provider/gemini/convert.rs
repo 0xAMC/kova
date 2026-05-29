@@ -12,8 +12,8 @@ fn generate_tool_id() -> String {
 use futures::{Stream, StreamExt};
 
 use super::types::{
-    GeminiCandidate, GeminiContent, GeminiGenerationConfig, GeminiFunctionCall,
-    GeminiFunctionDeclaration, GeminiFunctionResponse, GeminiPart, GeminiRequest, GeminiResponse,
+    GeminiCandidate, GeminiContent, GeminiFunctionCall, GeminiFunctionDeclaration,
+    GeminiFunctionResponse, GeminiGenerationConfig, GeminiPart, GeminiRequest, GeminiResponse,
     GeminiTool,
 };
 use crate::error::KovaError;
@@ -166,7 +166,12 @@ pub(crate) fn format_request(
                             function_response: None,
                             thought_signature: None,
                         }),
-                        ContentBlock::ToolUse { id, name, input, provider_metadata } => {
+                        ContentBlock::ToolUse {
+                            id,
+                            name,
+                            input,
+                            provider_metadata,
+                        } => {
                             let thought_signature = provider_metadata
                                 .as_ref()
                                 .and_then(|m| m["thoughtSignature"].as_str())
@@ -234,7 +239,11 @@ fn candidate_stop_reason(candidate: &GeminiCandidate) -> StopReason {
     // Prefer content detection: if any part is a functionCall the model is
     // requesting tool invocation regardless of finishReason (which is often
     // "STOP" even when function calls are present).
-    let has_function_calls = candidate.content.parts.iter().any(|p| p.function_call.is_some());
+    let has_function_calls = candidate
+        .content
+        .parts
+        .iter()
+        .any(|p| p.function_call.is_some());
     if has_function_calls {
         return StopReason::ToolUse;
     }
@@ -246,14 +255,15 @@ fn candidate_stop_reason(candidate: &GeminiCandidate) -> StopReason {
 }
 
 pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelResponse, KovaError> {
-    let candidate = gemini_resp
-        .candidates
-        .into_iter()
-        .next()
-        .ok_or_else(|| KovaError::Provider {
-            message: "No candidates in response".to_string(),
-            status_code: None,
-        })?;
+    let candidate =
+        gemini_resp
+            .candidates
+            .into_iter()
+            .next()
+            .ok_or_else(|| KovaError::Provider {
+                message: "No candidates in response".to_string(),
+                status_code: None,
+            })?;
 
     let stop_reason = candidate_stop_reason(&candidate);
 
@@ -264,10 +274,10 @@ pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelRespon
         if part.thought == Some(true) {
             continue;
         }
-        if let Some(text) = part.text {
-            if !text.is_empty() {
-                content.push(ContentBlock::Text { text });
-            }
+        if let Some(text) = part.text
+            && !text.is_empty()
+        {
+            content.push(ContentBlock::Text { text });
         }
         if let Some(fc) = part.function_call {
             let id = fc.id.unwrap_or_else(generate_tool_id);
@@ -304,9 +314,11 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
     if let Some(usage) = chunk.usage_metadata {
         // candidates_token_count can be 0 in streaming even when tokens were used;
         // total - input is always reliable.
-        let output_tokens = usage
-            .candidates_token_count
-            .max(usage.total_token_count.saturating_sub(usage.prompt_token_count));
+        let output_tokens = usage.candidates_token_count.max(
+            usage
+                .total_token_count
+                .saturating_sub(usage.prompt_token_count),
+        );
         events.push(StreamEvent::UsageEvent {
             input_tokens: usage.prompt_token_count,
             output_tokens,
@@ -338,10 +350,10 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
             if part.thought == Some(true) {
                 continue;
             }
-            if let Some(text) = part.text {
-                if !text.is_empty() {
-                    events.push(StreamEvent::ContentDelta { text });
-                }
+            if let Some(text) = part.text
+                && !text.is_empty()
+            {
+                events.push(StreamEvent::ContentDelta { text });
             }
             if let Some(fc) = part.function_call {
                 let id = fc.id.unwrap_or_else(generate_tool_id);
@@ -427,21 +439,27 @@ mod tests {
     fn user_msg(text: &str) -> ConversationMessage {
         ConversationMessage {
             role: Role::User,
-            content: vec![ContentBlock::Text { text: text.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
         }
     }
 
     fn assistant_text_msg(text: &str) -> ConversationMessage {
         ConversationMessage {
             role: Role::Assistant,
-            content: vec![ContentBlock::Text { text: text.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
         }
     }
 
     fn system_msg(text: &str) -> ConversationMessage {
         ConversationMessage {
             role: Role::System,
-            content: vec![ContentBlock::Text { text: text.to_string() }],
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
         }
     }
 
@@ -583,10 +601,7 @@ mod tests {
 
     // ── format_response ────────────────────────────────────────────
 
-    fn make_response(
-        finish_reason: Option<&str>,
-        parts: Vec<GeminiPart>,
-    ) -> GeminiResponse {
+    fn make_response(finish_reason: Option<&str>, parts: Vec<GeminiPart>) -> GeminiResponse {
         GeminiResponse {
             candidates: vec![GeminiCandidate {
                 content: GeminiContent {
@@ -613,7 +628,9 @@ mod tests {
         );
         let model_resp = format_response(resp).unwrap();
         assert_eq!(model_resp.stop_reason, StopReason::EndTurn);
-        assert!(matches!(&model_resp.content[0], ContentBlock::Text { text } if text == "Hello world"));
+        assert!(
+            matches!(&model_resp.content[0], ContentBlock::Text { text } if text == "Hello world")
+        );
     }
 
     #[test]
@@ -635,7 +652,9 @@ mod tests {
         let model_resp = format_response(resp).unwrap();
         assert_eq!(model_resp.stop_reason, StopReason::ToolUse);
         match &model_resp.content[0] {
-            ContentBlock::ToolUse { id, name, input, .. } => {
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
                 assert_eq!(id, "fc-123");
                 assert_eq!(name, "get_weather");
                 assert_eq!(input["city"], "London");

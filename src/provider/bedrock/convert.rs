@@ -39,7 +39,9 @@ pub(super) fn format_request(
             .iter()
             .map(|block| match block {
                 ContentBlock::Text { text } => BedrockContentBlock::Text(text.clone()),
-                ContentBlock::ToolUse { id, name, input, .. } => BedrockContentBlock::ToolUse {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => BedrockContentBlock::ToolUse {
                     tool_use_id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),

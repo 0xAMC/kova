@@ -59,7 +59,10 @@ impl GeminiProviderConfig {
 
     pub(super) fn generate_content_url(&self, model: &str) -> String {
         let base = self.base_url.trim_end_matches('/');
-        format!("{}/{}/models/{}:generateContent", base, self.api_version, model)
+        format!(
+            "{}/{}/models/{}:generateContent",
+            base, self.api_version, model
+        )
     }
 
     pub(super) fn stream_generate_content_url(&self, model: &str) -> String {

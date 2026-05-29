@@ -57,7 +57,8 @@ chat(conversation_id, user_message)
 ```
 LlmProvider (trait, object-safe)
  ├── OpenAiCompatibleProvider   ← reqwest + SSE parsing
- └── BedrockProvider            ← aws-sdk + SigV4 + ConverseStream
+ ├── BedrockProvider            ← aws-sdk + SigV4 + ConverseStream
+ └── GeminiProvider             ← reqwest + SSE (alt=sse), x-goog-api-key, thinking-model filtering
 ```
 
 **Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes.
@@ -65,6 +66,8 @@ LlmProvider (trait, object-safe)
 **OpenAI path override**: `OpenAiProviderConfig` exposes `with_chat_completions_path` and `with_models_path` so Azure deployments, local servers, and proxies can override the default `/v1/chat/completions` and `/v1/models` paths without subclassing.
 
 **Bedrock credential resolution**: explicit credentials → named profile → SDK default chain. The `BedrockProvider` resolves credentials once at construction; re-construction is required to rotate them.
+
+**Gemini path override**: `GeminiProviderConfig` exposes `with_base_url` and `with_api_version` for test servers and future API versions. Streaming requests append `?alt=sse` so the shared SSE parser handles Gemini stream chunks without a separate code path. Thinking-model chain-of-thought parts (`thought: true`) are dropped from `ContentBlock` output; their `thoughtSignature` is forwarded as `provider_metadata` on tool-use blocks for APIs that require it.
 
 ## Tool Execution Model
 

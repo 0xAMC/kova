@@ -630,7 +630,9 @@ async fn test_chat_completion_with_tools_e2e() {
     assert_eq!(resp.stop_reason, StopReason::ToolUse);
     assert_eq!(resp.content.len(), 1);
     match &resp.content[0] {
-        ContentBlock::ToolUse { id, name, input, .. } => {
+        ContentBlock::ToolUse {
+            id, name, input, ..
+        } => {
             assert_eq!(id, "call-001");
             assert_eq!(name, "get_weather");
             assert_eq!(input["city"], "Seattle");

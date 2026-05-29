@@ -235,7 +235,12 @@ fn arb_tool_use_block() -> impl Strategy<Value = ContentBlock> {
         "[a-z_]{2,15}",
         Just(json!({"key": "value"})),
     )
-        .prop_map(|(id, name, input)| ContentBlock::ToolUse { id, name, input, provider_metadata: None })
+        .prop_map(|(id, name, input)| ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            provider_metadata: None,
+        })
 }
 
 fn arb_text_only_assistant() -> impl Strategy<Value = (ConversationMessage, StopReason)> {

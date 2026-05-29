@@ -58,7 +58,9 @@ pub(crate) fn format_request(
         for block in &msg.content {
             match block {
                 ContentBlock::Text { text } => text_parts.push(text.clone()),
-                ContentBlock::ToolUse { id, name, input, .. } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     tool_calls.push(OaiToolCall {
                         id: id.clone(),
                         call_type: "function".to_string(),
