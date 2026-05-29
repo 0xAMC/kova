@@ -137,9 +137,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let merged = self.merge_config(config);
         let mut oai_request = format_request(messages, tools, &merged);
         oai_request.stream = Some(true);
-        oai_request.stream_options = Some(OaiStreamOptions {
-            include_usage: true,
-        });
+        oai_request.stream_options = Some(OaiStreamOptions { include_usage: true });
 
         let url = self.config.chat_completions_url();
         let req = self.apply_auth(self.client.post(&url).json(&oai_request));
