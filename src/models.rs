@@ -23,6 +23,10 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        // Provider-specific data that must be round-tripped verbatim in conversation history.
+        // e.g. Gemini thinking models store {"thoughtSignature": "<blob>"} here.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        provider_metadata: Option<serde_json::Value>,
     },
     ToolResult {
         tool_use_id: String,
@@ -107,6 +111,7 @@ pub enum StreamEvent {
         id: String,
         name: Option<String>,
         input_delta: Option<String>,
+        provider_metadata: Option<serde_json::Value>,
     },
     StopEvent {
         stop_reason: StopReason,

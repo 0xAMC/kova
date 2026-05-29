@@ -20,6 +20,7 @@ fn arb_tool_use_block() -> impl Strategy<Value = ContentBlock> {
             id,
             name,
             input: json!({ "key": val }),
+            provider_metadata: None,
         }
     })
 }
@@ -129,6 +130,7 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
                 id: String::new(),
                 name: None,
                 input_delta: Some(input),
+                provider_metadata: None,
             };
             (event, expected)
         }),
@@ -144,6 +146,7 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
                 id: tool_use_id,
                 name: Some(name),
                 input_delta: None,
+                provider_metadata: None,
             };
             (event, expected)
         }),
@@ -546,6 +549,7 @@ fn test_format_stream_event_tool_use_start() {
             id: "tool-abc".to_string(),
             name: Some("search".to_string()),
             input_delta: None,
+            provider_metadata: None,
         })
     );
 }
@@ -564,6 +568,7 @@ fn test_format_stream_event_tool_use_input_delta() {
             id: String::new(),
             name: None,
             input_delta: Some("{\"query\":\"rust\"}".to_string()),
+            provider_metadata: None,
         })
     );
 }

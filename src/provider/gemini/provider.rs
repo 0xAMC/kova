@@ -4,9 +4,9 @@ use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
 
-use super::config::OpenAiProviderConfig;
+use super::config::GeminiProviderConfig;
 use super::convert::{format_request, format_response, sse_byte_stream_to_events};
-use super::types::{OaiChatCompletionResponse, OaiModelListResponse, OaiStreamOptions};
+use super::types::{GeminiModelListResponse, GeminiResponse};
 use crate::error::KovaError;
 use crate::models::{
     ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, StreamEvent, ToolDefinition,
@@ -14,18 +14,30 @@ use crate::models::{
 use crate::provider::LlmProvider;
 use crate::provider::http::map_request_error;
 
-pub struct OpenAiCompatibleProvider {
+pub struct GeminiProvider {
     client: Client,
-    config: OpenAiProviderConfig,
+    config: GeminiProviderConfig,
 }
 
-impl OpenAiCompatibleProvider {
-    pub fn new(config: OpenAiProviderConfig) -> Result<Self, KovaError> {
+impl GeminiProvider {
+    pub fn new(config: GeminiProviderConfig) -> Result<Self, KovaError> {
         let client = Client::builder()
             .timeout(config.timeout)
             .build()
             .map_err(|e| KovaError::Connection(e.to_string()))?;
         Ok(Self { client, config })
+    }
+
+    fn effective_model<'a>(&'a self, config: &'a InferenceConfig) -> &'a str {
+        config.model.as_deref().unwrap_or(&self.config.model)
+    }
+
+    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        if let Some(ref key) = self.config.api_key {
+            req.header("x-goog-api-key", key)
+        } else {
+            req
+        }
     }
 
     fn merge_config(&self, request_config: &InferenceConfig) -> InferenceConfig {
@@ -34,32 +46,24 @@ impl OpenAiCompatibleProvider {
                 .model
                 .clone()
                 .or_else(|| Some(self.config.model.clone())),
-            max_tokens: request_config.max_tokens.or(self.config.max_tokens),
-            temperature: request_config.temperature.or(self.config.temperature),
-        }
-    }
-
-    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        if let Some(ref key) = self.config.api_key {
-            req.header("Authorization", format!("Bearer {key}"))
-        } else {
-            req
+            max_tokens: request_config.max_tokens,
+            temperature: request_config.temperature,
         }
     }
 }
 
 #[async_trait]
-impl LlmProvider for OpenAiCompatibleProvider {
+impl LlmProvider for GeminiProvider {
     async fn chat_completion(
         &self,
         messages: &[ConversationMessage],
         tools: &[ToolDefinition],
         config: &InferenceConfig,
     ) -> Result<ModelResponse, KovaError> {
-        let model_name = config.model.as_deref().unwrap_or(&self.config.model);
+        let model_name = self.effective_model(config).to_string();
         let span = tracing::info_span!(
             "llm.chat_completion",
-            provider = "openai",
+            provider = "gemini",
             model = %model_name,
             otel.status_code = tracing::field::Empty,
             llm.input_tokens = tracing::field::Empty,
@@ -69,9 +73,9 @@ impl LlmProvider for OpenAiCompatibleProvider {
         let _guard = span.enter();
 
         let merged = self.merge_config(config);
-        let oai_request = format_request(messages, tools, &merged);
-        let url = self.config.chat_completions_url();
-        let req = self.apply_auth(self.client.post(&url).json(&oai_request));
+        let gemini_request = format_request(messages, tools, &merged);
+        let url = self.config.generate_content_url(&model_name);
+        let req = self.apply_auth(self.client.post(&url).json(&gemini_request));
 
         let start = std::time::Instant::now();
         let response = req.send().await.map_err(|e| {
@@ -93,7 +97,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             return Err(err);
         }
 
-        let oai_response: OaiChatCompletionResponse = response.json().await.map_err(|e| {
+        let gemini_response: GeminiResponse = response.json().await.map_err(|e| {
             let err = KovaError::Provider {
                 message: format!("Failed to deserialize response: {e}"),
                 status_code: None,
@@ -104,19 +108,19 @@ impl LlmProvider for OpenAiCompatibleProvider {
         })?;
 
         let latency_ms = start.elapsed().as_millis() as u64;
-        if let Some(ref usage) = oai_response.usage {
-            tracing::Span::current().record("llm.input_tokens", usage.prompt_tokens);
-            tracing::Span::current().record("llm.output_tokens", usage.completion_tokens);
+        if let Some(ref usage) = gemini_response.usage_metadata {
+            tracing::Span::current().record("llm.input_tokens", usage.prompt_token_count);
+            tracing::Span::current().record("llm.output_tokens", usage.candidates_token_count);
         }
-        let finish_reason = oai_response
-            .choices
+        let finish_reason = gemini_response
+            .candidates
             .first()
             .and_then(|c| c.finish_reason.as_deref())
-            .unwrap_or("unknown");
+            .unwrap_or("STOP");
         tracing::Span::current().record("llm.stop_reason", finish_reason);
         tracing::info!(latency_ms, "LLM chat completion succeeded");
 
-        format_response(oai_response)
+        format_response(gemini_response)
     }
 
     async fn chat_completion_stream(
@@ -125,22 +129,19 @@ impl LlmProvider for OpenAiCompatibleProvider {
         tools: &[ToolDefinition],
         config: &InferenceConfig,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
-        let model_name = config.model.as_deref().unwrap_or(&self.config.model);
+        let model_name = self.effective_model(config).to_string();
         let span = tracing::info_span!(
             "llm.chat_completion_stream",
-            provider = "openai",
+            provider = "gemini",
             model = %model_name,
             otel.status_code = tracing::field::Empty,
         );
         let _guard = span.enter();
 
         let merged = self.merge_config(config);
-        let mut oai_request = format_request(messages, tools, &merged);
-        oai_request.stream = Some(true);
-        oai_request.stream_options = Some(OaiStreamOptions { include_usage: true });
-
-        let url = self.config.chat_completions_url();
-        let req = self.apply_auth(self.client.post(&url).json(&oai_request));
+        let gemini_request = format_request(messages, tools, &merged);
+        let url = self.config.stream_generate_content_url(&model_name);
+        let req = self.apply_auth(self.client.post(&url).json(&gemini_request));
 
         let response = req.send().await.map_err(|e| {
             let err = map_request_error(e, self.config.timeout);
@@ -167,7 +168,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
     async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
         let span = tracing::info_span!(
             "llm.list_models",
-            provider = "openai",
+            provider = "gemini",
             otel.status_code = tracing::field::Empty,
         );
         let _guard = span.enter();
@@ -194,7 +195,7 @@ impl LlmProvider for OpenAiCompatibleProvider {
             return Err(err);
         }
 
-        let model_list: OaiModelListResponse = response.json().await.map_err(|e| {
+        let model_list: GeminiModelListResponse = response.json().await.map_err(|e| {
             let err = KovaError::Provider {
                 message: format!("Failed to deserialize model list: {e}"),
                 status_code: None,
@@ -204,13 +205,21 @@ impl LlmProvider for OpenAiCompatibleProvider {
         })?;
 
         Ok(model_list
-            .data
+            .models
             .into_iter()
-            .map(|m| ModelInfo {
-                id: m.id,
-                object: m.object,
-                created: m.created,
-                owned_by: m.owned_by,
+            .map(|m| {
+                // API returns names like "models/gemini-2.0-flash"; strip prefix.
+                let id = m
+                    .name
+                    .strip_prefix("models/")
+                    .unwrap_or(&m.name)
+                    .to_string();
+                ModelInfo {
+                    id,
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: "google".to_string(),
+                }
             })
             .collect())
     }
@@ -221,7 +230,7 @@ mod tests {
     use super::*;
     use crate::models::{ContentBlock, Role};
     use serde_json::json;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn sample_messages() -> Vec<ConversationMessage> {
@@ -235,7 +244,7 @@ mod tests {
 
     fn sample_config() -> InferenceConfig {
         InferenceConfig {
-            model: Some("test-model".to_string()),
+            model: Some("gemini-2.0-flash".to_string()),
             max_tokens: Some(100),
             temperature: Some(0.7),
         }
@@ -243,180 +252,184 @@ mod tests {
 
     fn sample_response_json() -> serde_json::Value {
         json!({
-            "id": "chatcmpl-123",
-            "object": "chat.completion",
-            "created": 1234567890u64,
-            "model": "test-model",
-            "choices": [{
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": "Hi there!"
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{ "text": "Hi there!" }]
                 },
-                "finish_reason": "stop"
+                "finishReason": "STOP"
             }],
-            "usage": {
-                "prompt_tokens": 5,
-                "completion_tokens": 3,
-                "total_tokens": 8
+            "usageMetadata": {
+                "promptTokenCount": 5,
+                "candidatesTokenCount": 3,
+                "totalTokenCount": 8
             }
         })
     }
 
-    fn provider_config(base_url: &str, api_key: Option<&str>) -> OpenAiProviderConfig {
-        let mut cfg = OpenAiProviderConfig::new(base_url, "test-model");
-        if let Some(key) = api_key {
-            cfg = cfg.with_api_key(key);
+    fn provider_for(server: &MockServer, api_key: Option<&str>) -> GeminiProvider {
+        let mut cfg = GeminiProviderConfig::new("gemini-2.0-flash")
+            .with_base_url(server.uri());
+        if let Some(k) = api_key {
+            cfg = cfg.with_api_key(k);
         }
-        cfg
+        GeminiProvider::new(cfg).unwrap()
     }
 
     #[tokio::test]
-    async fn test_api_key_header_present_when_configured() {
+    async fn test_api_key_header_sent() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
-            .and(header("Authorization", "Bearer test-key"))
+            .and(path_regex(r".*:generateContent$"))
+            .and(header("x-goog-api-key", "my-key"))
             .respond_with(ResponseTemplate::new(200).set_body_json(sample_response_json()))
             .mount(&server)
             .await;
 
-        let provider =
-            OpenAiCompatibleProvider::new(provider_config(&server.uri(), Some("test-key")))
-                .unwrap();
-        let resp = provider
-            .chat_completion(&sample_messages(), &[], &sample_config())
-            .await;
-        assert!(resp.is_ok());
+        let provider = provider_for(&server, Some("my-key"));
+        assert!(provider.chat_completion(&sample_messages(), &[], &sample_config()).await.is_ok());
     }
 
     #[tokio::test]
-    async fn test_no_auth_header_when_api_key_absent() {
+    async fn test_no_api_key_still_sends_request() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
+            .and(path_regex(r".*:generateContent$"))
             .respond_with(ResponseTemplate::new(200).set_body_json(sample_response_json()))
             .mount(&server)
             .await;
 
-        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
-        let resp = provider
-            .chat_completion(&sample_messages(), &[], &sample_config())
-            .await;
-        assert!(resp.is_ok());
+        let provider = provider_for(&server, None);
+        assert!(provider.chat_completion(&sample_messages(), &[], &sample_config()).await.is_ok());
     }
 
     #[tokio::test]
     async fn test_http_400_returns_provider_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
+            .and(path_regex(r".*:generateContent$"))
             .respond_with(ResponseTemplate::new(400).set_body_string("bad request"))
             .mount(&server)
             .await;
 
-        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
-        let err = provider
+        let err = provider_for(&server, None)
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
             .unwrap_err();
-        match err {
-            KovaError::Provider {
-                status_code: Some(400),
-                ..
-            } => {}
-            other => panic!("Expected Provider 400, got {:?}", other),
-        }
+        assert!(matches!(err, KovaError::Provider { status_code: Some(400), .. }));
     }
 
     #[tokio::test]
     async fn test_http_429_returns_provider_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
+            .and(path_regex(r".*:generateContent$"))
             .respond_with(ResponseTemplate::new(429).set_body_string("rate limited"))
             .mount(&server)
             .await;
 
-        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
-        let err = provider
+        let err = provider_for(&server, None)
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
             .unwrap_err();
-        match err {
-            KovaError::Provider {
-                status_code: Some(429),
-                ..
-            } => {}
-            other => panic!("Expected Provider 429, got {:?}", other),
-        }
+        assert!(matches!(err, KovaError::Provider { status_code: Some(429), .. }));
     }
 
     #[tokio::test]
     async fn test_http_500_returns_provider_error() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/v1/chat/completions"))
+            .and(path_regex(r".*:generateContent$"))
             .respond_with(ResponseTemplate::new(500).set_body_string("internal error"))
             .mount(&server)
             .await;
 
-        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
-        let err = provider
+        let err = provider_for(&server, None)
             .chat_completion(&sample_messages(), &[], &sample_config())
             .await
             .unwrap_err();
-        match err {
-            KovaError::Provider {
-                status_code: Some(500),
-                ..
-            } => {}
-            other => panic!("Expected Provider 500, got {:?}", other),
-        }
+        assert!(matches!(err, KovaError::Provider { status_code: Some(500), .. }));
     }
 
     #[tokio::test]
-    async fn test_list_models_with_api_key() {
+    async fn test_list_models_strips_models_prefix() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/models"))
-            .and(header("Authorization", "Bearer my-key"))
+            .and(path("/v1beta/models"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": [{
-                    "id": "gpt-4",
-                    "object": "model",
-                    "created": 1000,
-                    "owned_by": "openai"
-                }]
+                "models": [
+                    { "name": "models/gemini-2.0-flash", "displayName": "Gemini 2.0 Flash" },
+                    { "name": "models/gemini-1.5-pro", "displayName": "Gemini 1.5 Pro" }
+                ]
             })))
             .mount(&server)
             .await;
 
-        let provider =
-            OpenAiCompatibleProvider::new(provider_config(&server.uri(), Some("my-key"))).unwrap();
+        let provider = provider_for(&server, None);
         let models = provider.list_models().await.unwrap();
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "gpt-4");
-        assert_eq!(models[0].owned_by, "openai");
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "gemini-2.0-flash");
+        assert_eq!(models[1].id, "gemini-1.5-pro");
+        assert_eq!(models[0].owned_by, "google");
+        assert_eq!(models[0].object, "model");
+    }
+
+    #[tokio::test]
+    async fn test_list_models_api_key_sent() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1beta/models"))
+            .and(header("x-goog-api-key", "key-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "models": [] })))
+            .mount(&server)
+            .await;
+
+        let provider = provider_for(&server, Some("key-123"));
+        assert!(provider.list_models().await.is_ok());
     }
 
     #[tokio::test]
     async fn test_list_models_error_status() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/v1/models"))
+            .and(path("/v1beta/models"))
             .respond_with(ResponseTemplate::new(503).set_body_string("unavailable"))
             .mount(&server)
             .await;
 
-        let provider = OpenAiCompatibleProvider::new(provider_config(&server.uri(), None)).unwrap();
-        let err = provider.list_models().await.unwrap_err();
-        match err {
-            KovaError::Provider {
-                status_code: Some(503),
-                ..
-            } => {}
-            other => panic!("Expected Provider 503, got {:?}", other),
-        }
+        let err = provider_for(&server, None).list_models().await.unwrap_err();
+        assert!(matches!(err, KovaError::Provider { status_code: Some(503), .. }));
+    }
+
+    #[tokio::test]
+    async fn test_function_call_response_detected_as_tool_use() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r".*:generateContent$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "candidates": [{
+                    "content": {
+                        "role": "model",
+                        "parts": [{
+                            "functionCall": {
+                                "id": "fc-1",
+                                "name": "search",
+                                "args": { "query": "cats" }
+                            }
+                        }]
+                    },
+                    "finishReason": "STOP"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = provider_for(&server, None);
+        let resp = provider
+            .chat_completion(&sample_messages(), &[], &sample_config())
+            .await
+            .unwrap();
+        assert_eq!(resp.stop_reason, crate::models::StopReason::ToolUse);
+        assert!(matches!(&resp.content[0], ContentBlock::ToolUse { name, .. } if name == "search"));
     }
 }

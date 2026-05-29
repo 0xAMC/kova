@@ -1,0 +1,730 @@
+use std::collections::HashMap;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn generate_tool_id() -> String {
+    let n = TOOL_CALL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("tooluse_{n:016x}")
+}
+
+use futures::{Stream, StreamExt};
+
+use super::types::{
+    GeminiCandidate, GeminiContent, GeminiGenerationConfig, GeminiFunctionCall,
+    GeminiFunctionDeclaration, GeminiFunctionResponse, GeminiPart, GeminiRequest, GeminiResponse,
+    GeminiTool,
+};
+use crate::error::KovaError;
+use crate::models::{
+    ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
+    StreamEvent, ToolDefinition, UsageStats,
+};
+use crate::streaming::sse::{SseLine, parse_sse_data, parse_sse_line};
+
+// ── Tool-ID → name lookup ──────────────────────────────────────────
+//
+// Gemini's FunctionResponse requires the function name, but kova's
+// ToolResult only stores tool_use_id. We build this map once per
+// request by scanning all ToolUse blocks in the message history.
+
+fn build_tool_id_map(messages: &[ConversationMessage]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    for msg in messages {
+        for block in &msg.content {
+            if let ContentBlock::ToolUse { id, name, .. } = block {
+                map.insert(id.clone(), name.clone());
+            }
+        }
+    }
+    map
+}
+
+// ── Request formatting ─────────────────────────────────────────────
+
+pub(crate) fn format_request(
+    messages: &[ConversationMessage],
+    tools: &[ToolDefinition],
+    config: &InferenceConfig,
+) -> GeminiRequest {
+    let tool_id_map = build_tool_id_map(messages);
+
+    let mut system_instruction: Option<GeminiContent> = None;
+    let mut contents: Vec<GeminiContent> = Vec::new();
+
+    for msg in messages {
+        match msg.role {
+            Role::System => {
+                let parts: Vec<GeminiPart> = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::Text { text } = b {
+                            Some(GeminiPart {
+                                text: Some(text.clone()),
+                                thought: None,
+                                function_call: None,
+                                function_response: None,
+                                thought_signature: None,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !parts.is_empty() {
+                    // role is present in the Content struct but ignored by the
+                    // API for systemInstruction; "user" keeps serde happy.
+                    system_instruction = Some(GeminiContent {
+                        role: "user".to_string(),
+                        parts,
+                    });
+                }
+            }
+
+            Role::Tool => {
+                // kova Role::Tool messages carry ToolResult blocks.
+                // Gemini models consume these as "user"-role FunctionResponse parts.
+                let parts: Vec<GeminiPart> = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } = b
+                        {
+                            let name = tool_id_map
+                                .get(tool_use_id)
+                                .cloned()
+                                .unwrap_or_else(|| "unknown".to_string());
+                            let response = if *is_error {
+                                serde_json::json!({ "error": content })
+                            } else {
+                                serde_json::json!({ "output": content })
+                            };
+                            Some(GeminiPart {
+                                text: None,
+                                thought: None,
+                                function_call: None,
+                                function_response: Some(GeminiFunctionResponse {
+                                    name,
+                                    id: Some(tool_use_id.clone()),
+                                    response,
+                                }),
+                                thought_signature: None,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !parts.is_empty() {
+                    contents.push(GeminiContent {
+                        role: "user".to_string(),
+                        parts,
+                    });
+                }
+            }
+
+            Role::User => {
+                let parts: Vec<GeminiPart> = msg
+                    .content
+                    .iter()
+                    .filter_map(|b| {
+                        if let ContentBlock::Text { text } = b {
+                            Some(GeminiPart {
+                                text: Some(text.clone()),
+                                thought: None,
+                                function_call: None,
+                                function_response: None,
+                                thought_signature: None,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !parts.is_empty() {
+                    contents.push(GeminiContent {
+                        role: "user".to_string(),
+                        parts,
+                    });
+                }
+            }
+
+            Role::Assistant => {
+                let mut parts: Vec<GeminiPart> = Vec::new();
+                for block in &msg.content {
+                    match block {
+                        ContentBlock::Text { text } => parts.push(GeminiPart {
+                            text: Some(text.clone()),
+                            thought: None,
+                            function_call: None,
+                            function_response: None,
+                            thought_signature: None,
+                        }),
+                        ContentBlock::ToolUse { id, name, input, provider_metadata } => {
+                            let thought_signature = provider_metadata
+                                .as_ref()
+                                .and_then(|m| m["thoughtSignature"].as_str())
+                                .map(|s| s.to_string());
+                            parts.push(GeminiPart {
+                                text: None,
+                                thought: None,
+                                function_call: Some(GeminiFunctionCall {
+                                    id: Some(id.clone()),
+                                    name: name.clone(),
+                                    args: input.clone(),
+                                }),
+                                function_response: None,
+                                thought_signature,
+                            })
+                        }
+                        ContentBlock::ToolResult { .. } => {}
+                    }
+                }
+                if !parts.is_empty() {
+                    contents.push(GeminiContent {
+                        role: "model".to_string(),
+                        parts,
+                    });
+                }
+            }
+        }
+    }
+
+    let gemini_tools = if tools.is_empty() {
+        None
+    } else {
+        Some(vec![GeminiTool {
+            function_declarations: tools
+                .iter()
+                .map(|t| GeminiFunctionDeclaration {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.parameters.clone(),
+                })
+                .collect(),
+        }])
+    };
+
+    let generation_config = if config.max_tokens.is_some() || config.temperature.is_some() {
+        Some(GeminiGenerationConfig {
+            max_output_tokens: config.max_tokens,
+            temperature: config.temperature,
+        })
+    } else {
+        None
+    };
+
+    GeminiRequest {
+        contents,
+        system_instruction,
+        tools: gemini_tools,
+        generation_config,
+    }
+}
+
+// ── Response formatting ────────────────────────────────────────────
+
+fn candidate_stop_reason(candidate: &GeminiCandidate) -> StopReason {
+    // Prefer content detection: if any part is a functionCall the model is
+    // requesting tool invocation regardless of finishReason (which is often
+    // "STOP" even when function calls are present).
+    let has_function_calls = candidate.content.parts.iter().any(|p| p.function_call.is_some());
+    if has_function_calls {
+        return StopReason::ToolUse;
+    }
+    match candidate.finish_reason.as_deref() {
+        Some("STOP") | None => StopReason::EndTurn,
+        Some("MAX_TOKENS") => StopReason::MaxTokens,
+        Some(other) => StopReason::Unknown(other.to_string()),
+    }
+}
+
+pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelResponse, KovaError> {
+    let candidate = gemini_resp
+        .candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| KovaError::Provider {
+            message: "No candidates in response".to_string(),
+            status_code: None,
+        })?;
+
+    let stop_reason = candidate_stop_reason(&candidate);
+
+    let mut content: Vec<ContentBlock> = Vec::new();
+    for part in candidate.content.parts {
+        // Thinking models emit chain-of-thought parts with thought=true.
+        // Skip these: they are internal reasoning, not user-visible output.
+        if part.thought == Some(true) {
+            continue;
+        }
+        if let Some(text) = part.text {
+            if !text.is_empty() {
+                content.push(ContentBlock::Text { text });
+            }
+        }
+        if let Some(fc) = part.function_call {
+            let id = fc.id.unwrap_or_else(generate_tool_id);
+            let provider_metadata = part
+                .thought_signature
+                .map(|sig| serde_json::json!({ "thoughtSignature": sig }));
+            content.push(ContentBlock::ToolUse {
+                id,
+                name: fc.name,
+                input: fc.args,
+                provider_metadata,
+            });
+        }
+    }
+
+    let usage = gemini_resp.usage_metadata.map(|u| UsageStats {
+        input_tokens: u.prompt_token_count,
+        output_tokens: u.candidates_token_count,
+        total_tokens: u.total_token_count,
+    });
+
+    Ok(ModelResponse {
+        content,
+        stop_reason,
+        usage,
+    })
+}
+
+// ── Stream event formatting ────────────────────────────────────────
+
+pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
+    let mut events: Vec<StreamEvent> = Vec::new();
+
+    if let Some(usage) = chunk.usage_metadata {
+        // candidates_token_count can be 0 in streaming even when tokens were used;
+        // total - input is always reliable.
+        let output_tokens = usage
+            .candidates_token_count
+            .max(usage.total_token_count.saturating_sub(usage.prompt_token_count));
+        events.push(StreamEvent::UsageEvent {
+            input_tokens: usage.prompt_token_count,
+            output_tokens,
+        });
+    }
+
+    for candidate in chunk.candidates {
+        let has_function_calls = candidate
+            .content
+            .parts
+            .iter()
+            .any(|p| p.thought != Some(true) && p.function_call.is_some());
+
+        if let Some(reason) = &candidate.finish_reason {
+            let stop_reason = if has_function_calls {
+                StopReason::ToolUse
+            } else {
+                match reason.as_str() {
+                    "STOP" => StopReason::EndTurn,
+                    "MAX_TOKENS" => StopReason::MaxTokens,
+                    other => StopReason::Unknown(other.to_string()),
+                }
+            };
+            events.push(StreamEvent::StopEvent { stop_reason });
+        }
+
+        for part in candidate.content.parts {
+            // Skip chain-of-thought parts from thinking models.
+            if part.thought == Some(true) {
+                continue;
+            }
+            if let Some(text) = part.text {
+                if !text.is_empty() {
+                    events.push(StreamEvent::ContentDelta { text });
+                }
+            }
+            if let Some(fc) = part.function_call {
+                let id = fc.id.unwrap_or_else(generate_tool_id);
+                let input_delta = serde_json::to_string(&fc.args).ok();
+                let provider_metadata = part
+                    .thought_signature
+                    .map(|sig| serde_json::json!({ "thoughtSignature": sig }));
+                events.push(StreamEvent::ToolUseDelta {
+                    id,
+                    name: Some(fc.name),
+                    input_delta,
+                    provider_metadata,
+                });
+            }
+        }
+    }
+
+    events
+}
+
+// ── SSE byte stream adapter ────────────────────────────────────────
+//
+// Gemini's streamGenerateContent sends SSE-formatted chunks when
+// `?alt=sse` is appended to the URL. Each `data:` payload is a full
+// GenerateContentResponse JSON object. The stream closes at EOF
+// without sending a `[DONE]` sentinel (unlike OpenAI).
+
+pub(crate) fn sse_byte_stream_to_events(
+    byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
+) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>> {
+    let mapped = byte_stream
+        .map(|chunk| chunk.map_err(|e| KovaError::Stream(format!("Connection error: {e}"))));
+
+    Box::pin(futures::stream::unfold(
+        (
+            Box::pin(mapped) as Pin<Box<dyn Stream<Item = Result<bytes::Bytes, KovaError>> + Send>>,
+            String::new(),
+            std::collections::VecDeque::<StreamEvent>::new(),
+        ),
+        |(mut stream, mut buffer, mut pending)| async move {
+            if let Some(event) = pending.pop_front() {
+                return Some((Ok(event), (stream, buffer, pending)));
+            }
+
+            loop {
+                if let Some(newline_pos) = buffer.find('\n') {
+                    let line = buffer[..newline_pos].to_string();
+                    buffer = buffer[newline_pos + 1..].to_string();
+
+                    match parse_sse_line(&line) {
+                        SseLine::Done => return None,
+                        SseLine::Data(data) => match parse_sse_data::<GeminiResponse>(&data) {
+                            Ok(chunk) => {
+                                let mut events: std::collections::VecDeque<_> =
+                                    format_stream_events(chunk).into();
+                                if let Some(first) = events.pop_front() {
+                                    return Some((Ok(first), (stream, buffer, events)));
+                                }
+                                continue;
+                            }
+                            Err(e) => return Some((Err(e), (stream, buffer, pending))),
+                        },
+                        SseLine::Empty | SseLine::Comment => continue,
+                    }
+                }
+
+                match stream.next().await {
+                    Some(Ok(bytes)) => buffer.push_str(&String::from_utf8_lossy(&bytes)),
+                    Some(Err(e)) => return Some((Err(e), (stream, buffer, pending))),
+                    None => return None,
+                }
+            }
+        },
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ContentBlock, ConversationMessage, Role};
+    use serde_json::json;
+
+    fn user_msg(text: &str) -> ConversationMessage {
+        ConversationMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: text.to_string() }],
+        }
+    }
+
+    fn assistant_text_msg(text: &str) -> ConversationMessage {
+        ConversationMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: text.to_string() }],
+        }
+    }
+
+    fn system_msg(text: &str) -> ConversationMessage {
+        ConversationMessage {
+            role: Role::System,
+            content: vec![ContentBlock::Text { text: text.to_string() }],
+        }
+    }
+
+    fn default_config() -> InferenceConfig {
+        InferenceConfig {
+            model: Some("gemini-2.0-flash".to_string()),
+            max_tokens: None,
+            temperature: None,
+        }
+    }
+
+    // ── format_request ─────────────────────────────────────────────
+
+    #[test]
+    fn test_user_message_maps_to_user_role() {
+        let messages = vec![user_msg("Hello")];
+        let req = format_request(&messages, &[], &default_config());
+        assert_eq!(req.contents.len(), 1);
+        assert_eq!(req.contents[0].role, "user");
+        assert_eq!(req.contents[0].parts[0].text.as_deref(), Some("Hello"));
+    }
+
+    #[test]
+    fn test_assistant_message_maps_to_model_role() {
+        let messages = vec![user_msg("Hi"), assistant_text_msg("Hello!")];
+        let req = format_request(&messages, &[], &default_config());
+        assert_eq!(req.contents[1].role, "model");
+    }
+
+    #[test]
+    fn test_system_message_becomes_system_instruction() {
+        let messages = vec![system_msg("You are helpful."), user_msg("Hi")];
+        let req = format_request(&messages, &[], &default_config());
+        // System message is NOT in contents
+        assert_eq!(req.contents.len(), 1);
+        assert!(req.system_instruction.is_some());
+        let si = req.system_instruction.unwrap();
+        assert_eq!(si.parts[0].text.as_deref(), Some("You are helpful."));
+    }
+
+    #[test]
+    fn test_tool_result_becomes_function_response_with_name_lookup() {
+        let messages = vec![
+            user_msg("What time is it?"),
+            ConversationMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "get_time".to_string(),
+                    input: json!({}),
+                    provider_metadata: None,
+                }],
+            },
+            ConversationMessage {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_string(),
+                    content: "12:00 PM".to_string(),
+                    is_error: false,
+                }],
+            },
+        ];
+        let req = format_request(&messages, &[], &default_config());
+        // Contents: user, model (tool call), user (function response)
+        assert_eq!(req.contents.len(), 3);
+        let fr_part = &req.contents[2].parts[0];
+        let fr = fr_part.function_response.as_ref().unwrap();
+        assert_eq!(fr.name, "get_time");
+        assert_eq!(fr.id.as_deref(), Some("call-1"));
+        assert_eq!(fr.response["output"], "12:00 PM");
+    }
+
+    #[test]
+    fn test_error_tool_result_wraps_in_error_key() {
+        let messages = vec![
+            user_msg("Do something"),
+            ConversationMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call-2".to_string(),
+                    name: "do_thing".to_string(),
+                    input: json!({}),
+                    provider_metadata: None,
+                }],
+            },
+            ConversationMessage {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-2".to_string(),
+                    content: "boom".to_string(),
+                    is_error: true,
+                }],
+            },
+        ];
+        let req = format_request(&messages, &[], &default_config());
+        let fr = req.contents[2].parts[0].function_response.as_ref().unwrap();
+        assert_eq!(fr.response["error"], "boom");
+    }
+
+    #[test]
+    fn test_tools_become_function_declarations() {
+        let tools = vec![ToolDefinition {
+            name: "search".to_string(),
+            description: "Search the web".to_string(),
+            parameters: json!({ "type": "object", "properties": {} }),
+        }];
+        let messages = vec![user_msg("Search for cats")];
+        let req = format_request(&messages, &tools, &default_config());
+        let gemini_tools = req.tools.unwrap();
+        assert_eq!(gemini_tools.len(), 1);
+        assert_eq!(gemini_tools[0].function_declarations[0].name, "search");
+    }
+
+    #[test]
+    fn test_empty_tools_omits_tools_field() {
+        let messages = vec![user_msg("Hi")];
+        let req = format_request(&messages, &[], &default_config());
+        assert!(req.tools.is_none());
+    }
+
+    #[test]
+    fn test_generation_config_from_inference_config() {
+        let config = InferenceConfig {
+            model: Some("gemini-2.0-flash".to_string()),
+            max_tokens: Some(512),
+            temperature: Some(0.5),
+        };
+        let req = format_request(&[user_msg("Hi")], &[], &config);
+        let gc = req.generation_config.unwrap();
+        assert_eq!(gc.max_output_tokens, Some(512));
+        assert_eq!(gc.temperature, Some(0.5));
+    }
+
+    #[test]
+    fn test_no_generation_config_when_defaults() {
+        let req = format_request(&[user_msg("Hi")], &[], &default_config());
+        assert!(req.generation_config.is_none());
+    }
+
+    // ── format_response ────────────────────────────────────────────
+
+    fn make_response(
+        finish_reason: Option<&str>,
+        parts: Vec<GeminiPart>,
+    ) -> GeminiResponse {
+        GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: "model".to_string(),
+                    parts,
+                },
+                finish_reason: finish_reason.map(|s| s.to_string()),
+            }],
+            usage_metadata: None,
+        }
+    }
+
+    #[test]
+    fn test_text_response_maps_to_content_block_text() {
+        let resp = make_response(
+            Some("STOP"),
+            vec![GeminiPart {
+                text: Some("Hello world".to_string()),
+                thought: None,
+                function_call: None,
+                function_response: None,
+                thought_signature: None,
+            }],
+        );
+        let model_resp = format_response(resp).unwrap();
+        assert_eq!(model_resp.stop_reason, StopReason::EndTurn);
+        assert!(matches!(&model_resp.content[0], ContentBlock::Text { text } if text == "Hello world"));
+    }
+
+    #[test]
+    fn test_function_call_maps_to_tool_use_with_stop_reason() {
+        let resp = make_response(
+            Some("STOP"),
+            vec![GeminiPart {
+                text: None,
+                thought: None,
+                function_call: Some(GeminiFunctionCall {
+                    id: Some("fc-123".to_string()),
+                    name: "get_weather".to_string(),
+                    args: json!({ "city": "London" }),
+                }),
+                function_response: None,
+                thought_signature: None,
+            }],
+        );
+        let model_resp = format_response(resp).unwrap();
+        assert_eq!(model_resp.stop_reason, StopReason::ToolUse);
+        match &model_resp.content[0] {
+            ContentBlock::ToolUse { id, name, input, .. } => {
+                assert_eq!(id, "fc-123");
+                assert_eq!(name, "get_weather");
+                assert_eq!(input["city"], "London");
+            }
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_function_call_missing_id_generates_unique_id() {
+        let resp = make_response(
+            Some("STOP"),
+            vec![GeminiPart {
+                text: None,
+                thought: None,
+                function_call: Some(GeminiFunctionCall {
+                    id: None,
+                    name: "my_tool".to_string(),
+                    args: json!({}),
+                }),
+                function_response: None,
+                thought_signature: None,
+            }],
+        );
+        let model_resp = format_response(resp).unwrap();
+        match &model_resp.content[0] {
+            ContentBlock::ToolUse { id, .. } => assert!(id.starts_with("tooluse_")),
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_max_tokens_finish_reason() {
+        let resp = make_response(
+            Some("MAX_TOKENS"),
+            vec![GeminiPart {
+                text: Some("truncated".to_string()),
+                thought: None,
+                function_call: None,
+                function_response: None,
+                thought_signature: None,
+            }],
+        );
+        let model_resp = format_response(resp).unwrap();
+        assert_eq!(model_resp.stop_reason, StopReason::MaxTokens);
+    }
+
+    #[test]
+    fn test_empty_candidates_returns_error() {
+        let resp = GeminiResponse {
+            candidates: vec![],
+            usage_metadata: None,
+        };
+        let err = format_response(resp).unwrap_err();
+        match err {
+            KovaError::Provider { message, .. } => {
+                assert!(message.contains("No candidates"));
+            }
+            other => panic!("Expected Provider error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_usage_metadata_maps_to_usage_stats() {
+        use super::super::types::GeminiUsageMetadata;
+        let resp = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: GeminiContent {
+                    role: "model".to_string(),
+                    parts: vec![GeminiPart {
+                        text: Some("Hi".to_string()),
+                        thought: None,
+                        function_call: None,
+                        function_response: None,
+                        thought_signature: None,
+                    }],
+                },
+                finish_reason: Some("STOP".to_string()),
+            }],
+            usage_metadata: Some(GeminiUsageMetadata {
+                prompt_token_count: 10,
+                candidates_token_count: 5,
+                total_token_count: 15,
+            }),
+        };
+        let model_resp = format_response(resp).unwrap();
+        let usage = model_resp.usage.unwrap();
+        assert_eq!(usage.input_tokens, 10);
+        assert_eq!(usage.output_tokens, 5);
+        assert_eq!(usage.total_tokens, 15);
+    }
+}

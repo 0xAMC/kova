@@ -58,7 +58,7 @@ pub(crate) fn format_request(
         for block in &msg.content {
             match block {
                 ContentBlock::Text { text } => text_parts.push(text.clone()),
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse { id, name, input, .. } => {
                     tool_calls.push(OaiToolCall {
                         id: id.clone(),
                         call_type: "function".to_string(),
@@ -157,6 +157,7 @@ pub(crate) fn format_response(
                 id: tc.id,
                 name: tc.function.name,
                 input,
+                provider_metadata: None,
             });
         }
     }
@@ -213,6 +214,7 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
                     id: tc_delta.id.clone().unwrap_or_default(),
                     name: tc_delta.function.as_ref().and_then(|f| f.name.clone()),
                     input_delta: tc_delta.function.as_ref().and_then(|f| f.arguments.clone()),
+                    provider_metadata: None,
                 });
             }
         }

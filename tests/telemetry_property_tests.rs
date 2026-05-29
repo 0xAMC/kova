@@ -119,6 +119,7 @@ fn make_tool_call_response(calls: Vec<(&str, &str)>) -> ModelResponse {
             id: id.to_string(),
             name: name.to_string(),
             input: serde_json::json!({}),
+            provider_metadata: None,
         })
         .collect();
     ModelResponse {

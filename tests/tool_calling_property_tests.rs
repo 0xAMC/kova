@@ -75,7 +75,7 @@ fn make_text_response(text: &str) -> ModelResponse {
 fn make_tool_call_response(tool_calls: Vec<(String, String, serde_json::Value)>) -> ModelResponse {
     let content = tool_calls
         .into_iter()
-        .map(|(id, name, input)| ContentBlock::ToolUse { id, name, input })
+        .map(|(id, name, input)| ContentBlock::ToolUse { id, name, input, provider_metadata: None })
         .collect();
     ModelResponse {
         content,
