@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
 
 use crate::error::KovaError;
 use crate::mcp::McpClient;
@@ -192,6 +193,7 @@ impl AgentBuilder {
             streaming_handler: self.streaming_handler,
             approval_handler: self.approval_handler,
             lifecycle_hook: self.lifecycle_hook,
+            last_turn_input_tokens: Arc::new(AtomicU32::new(0)),
         })
     }
 }
