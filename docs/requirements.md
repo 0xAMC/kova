@@ -11,10 +11,11 @@
 
 ### Providers
 - Expose a single `LlmProvider` trait that decouples the agent from any specific LLM backend.
-- Ship built-in implementations for OpenAI-compatible APIs and AWS Bedrock.
+- Ship built-in implementations for OpenAI-compatible APIs, AWS Bedrock, and Google Gemini.
 - Support tool/function calling in both blocking and streaming modes.
 - OpenAI provider must work with OpenAI, Azure OpenAI, Ollama, vLLM, and LM Studio without code changes.
 - Bedrock provider must resolve AWS credentials via explicit creds, named profile, or the default SDK chain.
+- Gemini provider must authenticate via `x-goog-api-key` and support thinking models (filter chain-of-thought parts from user-visible output).
 
 ### Tools
 - Define a `Tool` trait with `name`, `description`, `parameters_schema` (JSON Schema), and `execute`.

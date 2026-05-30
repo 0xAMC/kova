@@ -5,6 +5,10 @@ All notable changes to the `kova-sdk` library are documented here.
 ## Unreleased
 
 ### Added
+- `GeminiProvider` — new first-party provider for the Google Gemini API (`generativelanguage.googleapis.com`). Implements `LlmProvider` with `chat_completion`, `chat_completion_stream`, and `list_models`. Authenticates via `x-goog-api-key` header.
+- `GeminiProviderConfig` — fluent builder with `new(model)`, `with_api_key`, `with_timeout`, `with_base_url` (useful for mock servers), and `with_api_version`. Defaults to `v1beta` and a 60 s timeout.
+- Gemini streaming uses SSE (`alt=sse`) to reuse the shared SSE parser; `UsageEvent` is emitted from the final `usageMetadata` chunk.
+- Thinking-model support: chain-of-thought parts (`thought: true`) are filtered from user-visible output; `thoughtSignature` is preserved as `provider_metadata` on tool-use blocks for downstream tools that require it.
 - `Agent::last_turn_input_tokens() -> u32` — returns the input token count reported by the provider for the most recently completed turn (both `chat` and `chat_stream` paths). Returns `0` until the first turn completes or if the provider does not report usage. Updated atomically after every turn via `Arc<AtomicU32>`.
 - `StreamEvent::UsageEvent { input_tokens, output_tokens }` — both OpenAI-compatible and Bedrock providers now emit this event during streaming so callers can track token consumption per call.
 - `StopReason::as_str()` helper for span attribute recording.

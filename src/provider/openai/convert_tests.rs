@@ -99,6 +99,7 @@ fn test_format_request_tool_use_content_block() {
             id: "call_1".to_string(),
             name: "get_weather".to_string(),
             input: json!({"city": "Seattle"}),
+            provider_metadata: None,
         }],
     }];
     let req = format_request(&messages, &[], &sample_config());
@@ -234,7 +235,12 @@ fn arb_tool_use_block() -> impl Strategy<Value = ContentBlock> {
         "[a-z_]{2,15}",
         Just(json!({"key": "value"})),
     )
-        .prop_map(|(id, name, input)| ContentBlock::ToolUse { id, name, input })
+        .prop_map(|(id, name, input)| ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            provider_metadata: None,
+        })
 }
 
 fn arb_text_only_assistant() -> impl Strategy<Value = (ConversationMessage, StopReason)> {
@@ -376,14 +382,14 @@ proptest! {
             if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
         }).collect();
         let expected_tool_uses: Vec<(&str, &str, &serde_json::Value)> = assistant_msg.content.iter().filter_map(|b| {
-            if let ContentBlock::ToolUse { id, name, input } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
+            if let ContentBlock::ToolUse { id, name, input, .. } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
         }).collect();
 
         let actual_texts: Vec<&str> = model_response.content.iter().filter_map(|b| {
             if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
         }).collect();
         let actual_tool_uses: Vec<(&str, &str, &serde_json::Value)> = model_response.content.iter().filter_map(|b| {
-            if let ContentBlock::ToolUse { id, name, input } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
+            if let ContentBlock::ToolUse { id, name, input, .. } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
         }).collect();
 
         prop_assert_eq!(actual_texts.join(""), expected_texts.join(""));
@@ -415,7 +421,7 @@ proptest! {
         prop_assert_eq!(oai_req.messages.len(), 1);
         let oai_msg = &oai_req.messages[0];
         let expected_tool_uses: Vec<(&str, &str, &serde_json::Value)> = assistant_msg.content.iter().filter_map(|b| {
-            if let ContentBlock::ToolUse { id, name, input } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
+            if let ContentBlock::ToolUse { id, name, input, .. } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
         }).collect();
         prop_assert!(oai_msg.tool_calls.is_some());
         let tool_calls = oai_msg.tool_calls.as_ref().unwrap();

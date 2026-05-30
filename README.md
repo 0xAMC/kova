@@ -27,7 +27,7 @@ cargo add kova-sdk
 ```
 kova
 ├── agent        # Agent + AgentBuilder — the main orchestration loop
-├── provider     # LlmProvider trait + OpenAI / Bedrock implementations
+├── provider     # LlmProvider trait + OpenAI / Bedrock / Gemini implementations
 ├── tool         # Tool trait + thread-safe ToolRegistry
 ├── memory       # MemoryStore trait + InMemoryStore
 ├── mcp          # MCP client (stdio / HTTP+SSE) + McpTool adapter

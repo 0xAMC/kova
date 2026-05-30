@@ -30,7 +30,12 @@ fn arb_content_block() -> impl Strategy<Value = ContentBlock> {
             "[a-z_]{1,20}",
             Just(serde_json::json!({"key": "value"})),
         )
-            .prop_map(|(id, name, input)| ContentBlock::ToolUse { id, name, input }),
+            .prop_map(|(id, name, input)| ContentBlock::ToolUse {
+                id,
+                name,
+                input,
+                provider_metadata: None
+            }),
         ("[a-z0-9_]{1,20}", "[a-zA-Z0-9 ]{0,50}", any::<bool>(),).prop_map(
             |(tool_use_id, content, is_error)| ContentBlock::ToolResult {
                 tool_use_id,
@@ -103,6 +108,7 @@ fn arb_stream_event() -> impl Strategy<Value = StreamEvent> {
                 id,
                 name,
                 input_delta,
+                provider_metadata: None,
             }),
         arb_stop_reason().prop_map(|stop_reason| StreamEvent::StopEvent { stop_reason }),
         "[a-zA-Z0-9 ]{0,50}".prop_map(|message| StreamEvent::Error { message }),

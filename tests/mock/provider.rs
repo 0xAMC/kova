@@ -93,7 +93,12 @@ pub fn make_tool_call_response(
 ) -> ModelResponse {
     let content = tool_calls
         .into_iter()
-        .map(|(id, name, input)| ContentBlock::ToolUse { id, name, input })
+        .map(|(id, name, input)| ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            provider_metadata: None,
+        })
         .collect();
     ModelResponse {
         content,

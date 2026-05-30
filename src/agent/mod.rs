@@ -308,7 +308,10 @@ impl Agent {
         content
             .iter()
             .filter_map(|block| {
-                if let ContentBlock::ToolUse { id, name, input } = block {
+                if let ContentBlock::ToolUse {
+                    id, name, input, ..
+                } = block
+                {
                     Some((id.clone(), name.clone(), input.clone()))
                 } else {
                     None
@@ -348,6 +351,7 @@ impl Agent {
                 id: call.id.clone(),
                 name: call.name.clone(),
                 input: Self::parse_tool_input(&call.input_json),
+                provider_metadata: call.provider_metadata.clone(),
             });
         }
         blocks
@@ -479,13 +483,19 @@ impl Agent {
                             id,
                             name,
                             input_delta,
+                            provider_metadata,
                         } => {
                             if !id.is_empty() {
-                                acc.tool_calls.push(StreamedToolCall {
+                                let mut call = StreamedToolCall {
                                     id: id.clone(),
                                     name: name.clone().unwrap_or_default(),
                                     input_json: String::new(),
-                                });
+                                    provider_metadata: provider_metadata.clone(),
+                                };
+                                if let Some(delta) = input_delta {
+                                    call.input_json.push_str(delta);
+                                }
+                                acc.tool_calls.push(call);
                             } else if let (Some(last), Some(delta)) =
                                 (acc.tool_calls.last_mut(), input_delta)
                             {
@@ -516,6 +526,13 @@ impl Agent {
             }
         }
 
+        // Gemini sends finishReason in the *last* chunk, which may not contain
+        // function calls. Prefer content: if we accumulated any tool calls,
+        // the stop reason must be ToolUse regardless of what StopEvent said.
+        if !acc.tool_calls.is_empty() {
+            acc.stop_reason = StopReason::ToolUse;
+        }
+
         Ok(acc)
     }
 }
@@ -527,6 +544,7 @@ struct StreamedToolCall {
     id: String,
     name: String,
     input_json: String,
+    provider_metadata: Option<serde_json::Value>,
 }
 
 /// State accumulated while consuming a streaming response.

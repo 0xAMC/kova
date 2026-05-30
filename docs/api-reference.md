@@ -118,6 +118,33 @@ let config = BedrockProviderConfig::new("us-east-1", "my-model")
 | `timeout` | 60s | Request timeout |
 | `endpoint_url` | `None` | Override endpoint |
 
+### Google Gemini
+
+```rust
+use kova_sdk::provider::gemini::{GeminiProvider, GeminiProviderConfig};
+use std::time::Duration;
+
+let config = GeminiProviderConfig::new("gemini-2.0-flash")
+    .with_api_key("AIza...")
+    .with_timeout(Duration::from_secs(60))
+    // Override base URL for testing with a mock server:
+    .with_base_url("http://localhost:8080")
+    // Override API version (defaults to "v1beta"):
+    .with_api_version("v1beta");
+
+let provider = Arc::new(GeminiProvider::new(config)?);
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `model` | required | Gemini model ID, e.g. `"gemini-2.0-flash"` |
+| `api_key` | `None` | Sent as `x-goog-api-key` header |
+| `timeout` | 60s | Request timeout |
+| `base_url` | `https://generativelanguage.googleapis.com` | API base URL |
+| `api_version` | `"v1beta"` | URL path segment before `/models/` |
+
+Streaming uses `alt=sse` to reuse the shared SSE parser. Chain-of-thought parts from thinking models (`thought: true`) are filtered from user-visible output; `thoughtSignature` is preserved as `provider_metadata` on tool-use blocks.
+
 ### Custom Provider
 
 ```rust

@@ -39,7 +39,9 @@ pub(super) fn format_request(
             .iter()
             .map(|block| match block {
                 ContentBlock::Text { text } => BedrockContentBlock::Text(text.clone()),
-                ContentBlock::ToolUse { id, name, input } => BedrockContentBlock::ToolUse {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => BedrockContentBlock::ToolUse {
                     tool_use_id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
@@ -124,6 +126,7 @@ pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResp
                 id: tool_use_id,
                 name,
                 input,
+                provider_metadata: None,
             },
             BedrockContentBlock::ToolResult {
                 tool_use_id,
@@ -177,6 +180,7 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
                 id: String::new(),
                 name: None,
                 input_delta: Some(input),
+                provider_metadata: None,
             }),
         },
         BedrockStreamEvent::ContentBlockStart { start, .. } => match start {
@@ -185,6 +189,7 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
                     id: tool_use_id,
                     name: Some(name),
                     input_delta: None,
+                    provider_metadata: None,
                 })
             }
         },
