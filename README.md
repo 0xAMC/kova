@@ -4,7 +4,7 @@
 [![Docs.rs](https://docs.rs/kova-sdk/badge.svg)](https://docs.rs/kova-sdk)
 [![License](https://img.shields.io/crates/l/kova-sdk.svg)](LICENSE)
 
-Async-first Rust library for building LLM-powered agents. Trait-based architecture with pluggable providers, tool calling, memory, streaming, MCP integration, multi-agent orchestration, and telemetry.
+Async-first Rust library for building LLM-powered agents. Trait-based architecture with pluggable providers, tool calling, memory, streaming, thinking-model support, MCP integration, multi-agent orchestration, and telemetry.
 
 ## Installation
 
@@ -37,6 +37,16 @@ kova
 ├── models       # Shared data types (messages, content blocks, events)
 └── error        # Unified KovaError enum
 ```
+
+## Providers
+
+| Provider | Auth | Thinking models |
+|----------|------|-----------------|
+| `OpenAiCompatibleProvider` | Bearer token | `with_reasoning_effort("high")` for o-series models |
+| `BedrockProvider` | SigV4 (explicit / profile / default chain) | `with_additional_model_request_fields(json!({"budgetTokens": N}))` for Claude |
+| `GeminiProvider` | `x-goog-api-key` | `with_thinking_budget(N)` supportingmodels |
+
+Chain-of-thought output from thinking models is returned in `ModelResponse::thinking` and never stored in conversation history. During streaming it arrives as `StreamEvent::ThinkingDelta`; in blocking mode the agent forwards it to any registered `StreamingHandler`.
 
 ## Quick Start
 
