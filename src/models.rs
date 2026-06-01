@@ -80,6 +80,9 @@ pub struct ModelResponse {
     pub content: Vec<ContentBlock>,
     pub stop_reason: StopReason,
     pub usage: Option<UsageStats>,
+    /// Thinking/reasoning text from the model (not stored in conversation history).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 // ── Inference Config ───────────────────────────────────────────────
@@ -115,6 +118,9 @@ pub enum StreamEvent {
     },
     StopEvent {
         stop_reason: StopReason,
+    },
+    ThinkingDelta {
+        text: String,
     },
     UsageEvent {
         input_tokens: u32,

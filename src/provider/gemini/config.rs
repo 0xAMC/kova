@@ -14,7 +14,7 @@ pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 60;
 pub struct GeminiProviderConfig {
     /// Base URL of the Gemini API. Defaults to `https://generativelanguage.googleapis.com`.
     pub base_url: String,
-    /// Gemini model identifier, e.g. `"gemini-2.0-flash"`.
+    /// Gemini model identifier, e.g. `"gemini-2.5-flash"`.
     pub model: String,
     /// API key for `x-goog-api-key` authentication.
     pub api_key: Option<String>,
@@ -22,6 +22,9 @@ pub struct GeminiProviderConfig {
     pub timeout: Duration,
     /// API version path segment. Defaults to `"v1beta"`.
     pub api_version: String,
+    /// Token budget for extended thinking. -1 = dynamic (unlimited), 0 = disabled (default),
+    /// positive value = cap. Only has effect on thinking-capable models (e.g. gemini-2.5-flash).
+    pub thinking_budget: Option<i32>,
 }
 
 impl GeminiProviderConfig {
@@ -33,6 +36,7 @@ impl GeminiProviderConfig {
             api_key: None,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             api_version: DEFAULT_API_VERSION.to_string(),
+            thinking_budget: None,
         }
     }
 
@@ -54,6 +58,11 @@ impl GeminiProviderConfig {
 
     pub fn with_api_version(mut self, version: impl Into<String>) -> Self {
         self.api_version = version.into();
+        self
+    }
+
+    pub fn with_thinking_budget(mut self, budget: i32) -> Self {
+        self.thinking_budget = Some(budget);
         self
     }
 

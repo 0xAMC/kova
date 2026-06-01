@@ -61,13 +61,15 @@ LlmProvider (trait, object-safe)
  └── GeminiProvider             ← reqwest + SSE (alt=sse), x-goog-api-key, thinking-model filtering
 ```
 
-**Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes.
+**Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes. `ThinkingDelta` events are forwarded to the `StreamingHandler` but otherwise ignored by the accumulator.
 
-**OpenAI path override**: `OpenAiProviderConfig` exposes `with_chat_completions_path` and `with_models_path` so Azure deployments, local servers, and proxies can override the default `/v1/chat/completions` and `/v1/models` paths without subclassing.
+**OpenAI path override**: `OpenAiProviderConfig` exposes `with_chat_completions_path` and `with_models_path` so Azure deployments, local servers, and proxies can override the default `/v1/chat/completions` and `/v1/models` paths without subclassing. `with_reasoning_effort` sets the `reasoning_effort` field for o-series models.
 
-**Bedrock credential resolution**: explicit credentials → named profile → SDK default chain. The `BedrockProvider` resolves credentials once at construction; re-construction is required to rotate them.
+**Bedrock credential resolution**: explicit credentials → named profile → SDK default chain. The `BedrockProvider` resolves credentials once at construction; re-construction is required to rotate them. `BedrockProviderConfig::with_additional_model_request_fields` passes arbitrary JSON as `additionalModelRequestFields` in the Converse API request — used for model-specific knobs such as `budgetTokens` for extended thinking on Claude models.
 
-**Gemini path override**: `GeminiProviderConfig` exposes `with_base_url` and `with_api_version` for test servers and future API versions. Streaming requests append `?alt=sse` so the shared SSE parser handles Gemini stream chunks without a separate code path. Thinking-model chain-of-thought parts (`thought: true`) are dropped from `ContentBlock` output; their `thoughtSignature` is forwarded as `provider_metadata` on tool-use blocks for APIs that require it.
+**Gemini path override**: `GeminiProviderConfig` exposes `with_base_url` and `with_api_version` for test servers and future API versions. Streaming requests append `?alt=sse` so the shared SSE parser handles Gemini stream chunks without a separate code path. `with_thinking_budget` controls the extended-thinking token budget (`-1` = dynamic, `0` = off, positive = cap).
+
+**Thinking/reasoning across all providers**: chain-of-thought output (OpenAI `reasoning_content`, Bedrock `ReasoningContent`, Gemini `thought: true` parts) is extracted by each provider's converter and placed in `ModelResponse::thinking`. It is never written into the conversation history and is never re-submitted to the LLM. During streaming, reasoning text arrives as `StreamEvent::ThinkingDelta`. In the non-streaming `chat` path the agent replays any thinking text as `ThinkingDelta` + empty `ContentDelta` events to the registered `StreamingHandler` so callers see reasoning output in both modes.
 
 ## Tool Execution Model
 

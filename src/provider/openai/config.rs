@@ -32,6 +32,8 @@ pub struct OpenAiProviderConfig {
     pub models_path: String,
     /// Optional `api-version` query parameter (Azure OpenAI).
     pub api_version: Option<String>,
+    /// Reasoning effort for OpenAI o-series models: `"low"`, `"medium"`, or `"high"`.
+    pub reasoning_effort: Option<String>,
     /// Additional provider-specific key-value settings.
     pub extra: HashMap<String, String>,
 }
@@ -49,6 +51,7 @@ impl OpenAiProviderConfig {
             chat_completions_path: DEFAULT_CHAT_COMPLETIONS_PATH.to_string(),
             models_path: DEFAULT_MODELS_PATH.to_string(),
             api_version: None,
+            reasoning_effort: None,
             extra: HashMap::new(),
         }
     }
@@ -85,6 +88,12 @@ impl OpenAiProviderConfig {
 
     pub fn with_api_version(mut self, version: impl Into<String>) -> Self {
         self.api_version = Some(version.into());
+        self
+    }
+
+    /// Set reasoning effort for OpenAI o-series models (`"low"`, `"medium"`, `"high"`).
+    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
+        self.reasoning_effort = Some(effort.into());
         self
     }
 

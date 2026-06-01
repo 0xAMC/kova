@@ -36,6 +36,7 @@ pub(crate) fn format_request(
                     oai_messages.push(OaiMessage {
                         role: "tool".to_string(),
                         content: Some(content.clone()),
+                        reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: Some(tool_use_id.clone()),
                         name: None,
@@ -82,6 +83,7 @@ pub(crate) fn format_request(
             } else {
                 Some(text_parts.join(""))
             },
+            reasoning_content: None,
             tool_calls: if tool_calls.is_empty() {
                 None
             } else {
@@ -118,6 +120,7 @@ pub(crate) fn format_request(
         temperature: config.temperature,
         stream: None,
         stream_options: None,
+        reasoning_effort: None,
     }
 }
 
@@ -174,6 +177,7 @@ pub(crate) fn format_response(
         content,
         stop_reason,
         usage,
+        thinking: None,
     })
 }
 
@@ -204,6 +208,11 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
             events.push(StreamEvent::StopEvent {
                 stop_reason: map_finish_reason(Some(reason)),
             });
+        }
+        if let Some(text) = &choice.delta.reasoning_content
+            && !text.is_empty()
+        {
+            events.push(StreamEvent::ThinkingDelta { text: text.clone() });
         }
         if let Some(text) = &choice.delta.content
             && !text.is_empty()

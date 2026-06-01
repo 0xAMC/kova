@@ -35,6 +35,10 @@ pub struct BedrockProviderConfig {
     pub session_token: Option<String>,
     pub timeout: Duration,
     pub endpoint_url: Option<String>,
+    /// Passed verbatim as `additionalModelRequestFields` in the Converse API request.
+    /// Use this for any model-specific parameters beyond the standard `inferenceConfig` fields.
+    /// The key/value structure is model-defined — consult the model's AWS documentation.
+    pub additional_model_request_fields: Option<serde_json::Value>,
     base_url: String,
 }
 
@@ -56,6 +60,7 @@ impl BedrockProviderConfig {
             session_token: None,
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             endpoint_url: None,
+            additional_model_request_fields: None,
             base_url,
         }
     }
@@ -84,6 +89,11 @@ impl BedrockProviderConfig {
 
     pub fn with_endpoint_url(mut self, url: impl Into<String>) -> Self {
         self.endpoint_url = Some(url.into());
+        self
+    }
+
+    pub fn with_additional_model_request_fields(mut self, fields: serde_json::Value) -> Self {
+        self.additional_model_request_fields = Some(fields);
         self
     }
 }

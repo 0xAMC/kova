@@ -69,6 +69,21 @@ pub(crate) struct GeminiGenerationConfig {
     pub(crate) max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) thinking_config: Option<GeminiThinkingConfig>,
+}
+
+/// Controls chain-of-thought budget for thinking-capable Gemini models.
+/// Set `thinking_budget` to -1 for dynamic (unlimited), 0 to disable,
+/// or a positive value to cap tokens spent on reasoning.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GeminiThinkingConfig {
+    pub(crate) thinking_budget: i32,
+    // Must be true for thought parts to appear in the response; false = model
+    // thinks silently. Omitted (None) when thinking is disabled (budget == 0).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) include_thoughts: Option<bool>,
 }
 
 // ── Request ────────────────────────────────────────────────────────
@@ -99,7 +114,9 @@ pub(crate) struct GeminiResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GeminiCandidate {
-    pub(crate) content: GeminiContent,
+    // Optional: Gemini's final usage/stop chunks often omit the content field entirely.
+    #[serde(default)]
+    pub(crate) content: Option<GeminiContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) finish_reason: Option<String>,
 }

@@ -72,6 +72,7 @@ fn arb_model_response() -> impl Strategy<Value = ModelResponse> {
             content,
             stop_reason,
             usage,
+            thinking: None,
         })
 }
 

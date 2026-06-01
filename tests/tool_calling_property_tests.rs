@@ -69,6 +69,7 @@ fn make_text_response(text: &str) -> ModelResponse {
         }],
         stop_reason: StopReason::EndTurn,
         usage: None,
+        thinking: None,
     }
 }
 
@@ -86,6 +87,7 @@ fn make_tool_call_response(tool_calls: Vec<(String, String, serde_json::Value)>)
         content,
         stop_reason: StopReason::ToolUse,
         usage: None,
+        thinking: None,
     }
 }
 
@@ -333,6 +335,7 @@ proptest! {
                 content: vec![ContentBlock::Text { text: text.clone() }],
                 stop_reason,
                 usage: None,
+                thinking: None,
             };
 
             let provider = Arc::new(CapturingMock::new(vec![response]));

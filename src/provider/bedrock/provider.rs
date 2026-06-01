@@ -170,11 +170,17 @@ impl LlmProvider for BedrockProvider {
         let encoded_model = url_encode_model_id(&self.config.model_id);
         let url = format!("{}/model/{}/converse", base, encoded_model);
 
-        let bedrock_request = format_request(messages, tools, config);
+        let bedrock_request = format_request(
+            messages,
+            tools,
+            config,
+            self.config.additional_model_request_fields.clone(),
+        );
         let body = serde_json::to_vec(&bedrock_request).map_err(|e| KovaError::Provider {
             message: format!("Failed to serialize request: {e}"),
             status_code: None,
         })?;
+        tracing::debug!(body = %String::from_utf8_lossy(&body), "Bedrock request body");
 
         let signed_headers = self.sign_request("POST", &url, &body).await?;
 
@@ -203,14 +209,24 @@ impl LlmProvider for BedrockProvider {
             return Err(err);
         }
 
-        let bedrock_response: BedrockConverseResponse = response.json().await.map_err(|e| {
+        let response_text = response.text().await.map_err(|e| {
             let err = KovaError::Provider {
-                message: format!("Failed to deserialize response: {e}"),
+                message: format!("Failed to read response body: {e}"),
                 status_code: None,
             };
             tracing::Span::current().record("otel.status_code", "ERROR");
             err
         })?;
+        tracing::debug!(body = %response_text, "Bedrock response body");
+        let bedrock_response: BedrockConverseResponse = serde_json::from_str(&response_text)
+            .map_err(|e| {
+                let err = KovaError::Provider {
+                    message: format!("Failed to deserialize response: {e}"),
+                    status_code: None,
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                err
+            })?;
 
         tracing::Span::current().record("llm.input_tokens", bedrock_response.usage.input_tokens);
         tracing::Span::current().record("llm.output_tokens", bedrock_response.usage.output_tokens);
@@ -238,11 +254,17 @@ impl LlmProvider for BedrockProvider {
         let encoded_model = url_encode_model_id(&self.config.model_id);
         let url = format!("{}/model/{}/converse-stream", base, encoded_model);
 
-        let bedrock_request = format_request(messages, tools, config);
+        let bedrock_request = format_request(
+            messages,
+            tools,
+            config,
+            self.config.additional_model_request_fields.clone(),
+        );
         let body = serde_json::to_vec(&bedrock_request).map_err(|e| KovaError::Provider {
             message: format!("Failed to serialize request: {e}"),
             status_code: None,
         })?;
+        tracing::debug!(body = %String::from_utf8_lossy(&body), "Bedrock stream request body");
 
         let signed_headers = self.sign_request("POST", &url, &body).await?;
 

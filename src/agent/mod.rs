@@ -149,6 +149,23 @@ impl Agent {
                         self.last_turn_input_tokens
                             .store(usage.input_tokens, Ordering::Relaxed);
                     }
+                    // Emit thinking content via the streaming handler so it displays
+                    // in the terminal even in non-streaming mode.
+                    if let (Some(thinking_text), Some(handler)) =
+                        (&response.thinking, &self.streaming_handler)
+                    {
+                        let _ = handler
+                            .on_chunk(&StreamEvent::ThinkingDelta {
+                                text: thinking_text.clone(),
+                            })
+                            .await;
+                        // Empty ContentDelta closes the thinking box without printing anything.
+                        let _ = handler
+                            .on_chunk(&StreamEvent::ContentDelta {
+                                text: String::new(),
+                            })
+                            .await;
+                    }
                     self.store_assistant_message(conversation_id, response.content.clone())
                         .await?;
                     return Ok(Self::collect_text(&response.content));
@@ -512,6 +529,7 @@ impl Agent {
                             acc.input_tokens = Some(*input_tokens);
                             acc.output_tokens = Some(*output_tokens);
                         }
+                        StreamEvent::ThinkingDelta { .. } => {}
                         StreamEvent::Error { message } => {
                             let err = KovaError::Stream(message.clone());
                             handler.on_error(&err).await;
