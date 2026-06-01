@@ -69,6 +69,7 @@ fn make_text_response(text: &str) -> ModelResponse {
         }],
         stop_reason: StopReason::EndTurn,
         usage: None,
+        thinking: None,
     }
 }
 

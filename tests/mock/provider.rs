@@ -84,6 +84,7 @@ pub fn make_text_response(text: &str) -> ModelResponse {
             output_tokens: 5,
             total_tokens: 15,
         }),
+        thinking: None,
     }
 }
 
@@ -93,7 +94,12 @@ pub fn make_tool_call_response(
 ) -> ModelResponse {
     let content = tool_calls
         .into_iter()
-        .map(|(id, name, input)| ContentBlock::ToolUse { id, name, input })
+        .map(|(id, name, input)| ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            provider_metadata: None,
+        })
         .collect();
     ModelResponse {
         content,
@@ -103,6 +109,7 @@ pub fn make_tool_call_response(
             output_tokens: 5,
             total_tokens: 15,
         }),
+        thinking: None,
     }
 }
 

@@ -43,6 +43,11 @@ agent.chat(conversation_id: &str, user_message: &str) -> Result<String, KovaErro
 
 // Streaming response — delivers chunks to StreamingHandler, returns full text
 agent.chat_stream(conversation_id: &str, user_message: &str) -> Result<String, KovaError>
+
+// Input tokens reported by the provider for the most recently completed turn.
+// Returns 0 until the first turn completes or if the provider does not report usage.
+// Updated atomically after every turn; safe to call from any thread concurrently.
+agent.last_turn_input_tokens() -> u32
 ```
 
 ## Providers
@@ -58,6 +63,8 @@ let config = OpenAiProviderConfig::new("https://api.openai.com", "gpt-4")
     .with_timeout(Duration::from_secs(60))
     .with_max_tokens(4096)
     .with_temperature(0.7)
+    // OpenAI o-series reasoning models:
+    .with_reasoning_effort("high")
     // Azure:
     .with_api_version("2024-02-01")
     .with_chat_completions_path("/openai/deployments/gpt-4/chat/completions")
@@ -77,6 +84,7 @@ let provider = Arc::new(OpenAiCompatibleProvider::new(config)?);
 | `chat_completions_path` | `/v1/chat/completions` | Chat endpoint path |
 | `models_path` | `/v1/models` | Models list endpoint path |
 | `api_version` | `None` | Query param (e.g. Azure `api-version`) |
+| `reasoning_effort` | `None` | `"low"` / `"medium"` / `"high"` — o-series models only |
 
 ### AWS Bedrock
 
@@ -98,6 +106,10 @@ let config = BedrockProviderConfig::new("us-east-1", "anthropic.claude-sonnet-4-
 // Custom endpoint (LocalStack)
 let config = BedrockProviderConfig::new("us-east-1", "my-model")
     .with_endpoint_url("http://localhost:4566");
+
+// Extended thinking on Claude models (passes additionalModelRequestFields)
+let config = BedrockProviderConfig::new("us-east-1", "anthropic.claude-sonnet-4-20250514-v1:0")
+    .with_additional_model_request_fields(serde_json::json!({ "budgetTokens": 5000 }));
 ```
 
 **Credential resolution order:** explicit → named profile → default AWS chain.
@@ -112,6 +124,80 @@ let config = BedrockProviderConfig::new("us-east-1", "my-model")
 | `session_token` | `None` | STS session token |
 | `timeout` | 60s | Request timeout |
 | `endpoint_url` | `None` | Override endpoint |
+| `additional_model_request_fields` | `None` | Arbitrary JSON passed as `additionalModelRequestFields` |
+
+### Google Gemini
+
+```rust
+use kova_sdk::provider::gemini::{GeminiProvider, GeminiProviderConfig};
+use std::time::Duration;
+
+let config = GeminiProviderConfig::new("gemini-2.0-flash")
+    .with_api_key("AIza...")
+    .with_timeout(Duration::from_secs(60))
+    // Override base URL for testing with a mock server:
+    .with_base_url("http://localhost:8080")
+    // Override API version (defaults to "v1beta"):
+    .with_api_version("v1beta");
+
+// Enable extended thinking on thinking-capable models:
+// -1 = dynamic/unlimited, 0 = disabled (default), positive = token cap
+let config = GeminiProviderConfig::new("gemini-2.5-flash")
+    .with_api_key("AIza...")
+    .with_thinking_budget(5000);
+
+let provider = Arc::new(GeminiProvider::new(config)?);
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `model` | required | Gemini model ID, e.g. `"gemini-2.0-flash"` |
+| `api_key` | `None` | Sent as `x-goog-api-key` header |
+| `timeout` | 60s | Request timeout |
+| `base_url` | `https://generativelanguage.googleapis.com` | API base URL |
+| `api_version` | `"v1beta"` | URL path segment before `/models/` |
+| `thinking_budget` | `None` (disabled) | Token budget for extended thinking: `-1` unlimited, `0` off, positive = cap |
+
+Streaming uses `alt=sse` to reuse the shared SSE parser. Chain-of-thought parts from thinking models (`thought: true`) are filtered from user-visible `content` and placed in `ModelResponse::thinking`; `thoughtSignature` is preserved as `provider_metadata` on tool-use blocks.
+
+### Ollama
+
+```rust
+use kova_sdk::provider::ollama::{OllamaProvider, OllamaProviderConfig, OllamaThink};
+
+// Local instance (default: http://localhost:11434)
+let config = OllamaProviderConfig::new("llama3.2");
+let provider = Arc::new(OllamaProvider::new(config)?);
+
+// Remote instance
+let config = OllamaProviderConfig::new("llama3.2")
+    .with_base_url("http://my-server:11434")
+    .with_timeout(Duration::from_secs(180))
+    .with_keep_alive("10m");
+
+// Thinking-capable model (qwen3, deepseek-r1, etc.)
+let config = OllamaProviderConfig::new("qwen3")
+    .with_think(OllamaThink::High);
+
+// Extra generation options
+use serde_json::json;
+let mut opts = serde_json::Map::new();
+opts.insert("temperature".into(), json!(0.7));
+opts.insert("num_ctx".into(), json!(8192));
+let config = OllamaProviderConfig::new("llama3.2")
+    .with_extra_options(opts);
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `model` | required | Ollama model identifier, e.g. `"llama3.2"`, `"qwen3"`, `"deepseek-r1"` |
+| `base_url` | `http://localhost:11434` | Ollama server URL |
+| `timeout` | 120s | Request timeout (local inference can be slow) |
+| `keep_alive` | `None` | Model keep-alive duration, e.g. `"5m"` or `"0"` to unload immediately |
+| `think` | `None` | `OllamaThink::Enabled` / `High` / `Medium` / `Low` — requires a thinking model |
+| `extra_options` | `None` | Merged into the `options` object (e.g. `top_k`, `seed`, `num_ctx`) |
+
+No API key is required. Streaming uses NDJSON over `/api/chat`; `list_models` uses `/api/tags`. Tool calls are supported. When `think` is set, reasoning text arrives as `StreamEvent::ThinkingDelta`.
 
 ### Custom Provider
 
@@ -242,7 +328,11 @@ struct MyHandler;
 #[async_trait]
 impl StreamingHandler for MyHandler {
     async fn on_chunk(&self, event: &StreamEvent) -> Result<(), KovaError> {
-        if let StreamEvent::ContentDelta { text } = event { print!("{text}"); }
+        match event {
+            StreamEvent::ThinkingDelta { text } => eprint!("{text}"),   // reasoning output
+            StreamEvent::ContentDelta { text } => print!("{text}"),     // visible response
+            _ => {}
+        }
         Ok(())
     }
     async fn on_complete(&self) -> Result<(), KovaError> { println!(); Ok(()) }
@@ -358,11 +448,11 @@ match result {
 | `Role` | `User`, `Assistant`, `System`, `Tool` |
 | `ContentBlock` | `Text { text }`, `ToolUse { id, name, input }`, `ToolResult { tool_use_id, content, is_error }` |
 | `ConversationMessage` | `role: Role` + `content: Vec<ContentBlock>` |
-| `ModelResponse` | `content`, `stop_reason`, `usage: Option<UsageStats>` |
+| `ModelResponse` | `content`, `stop_reason`, `usage: Option<UsageStats>`, `thinking: Option<String>` |
 | `StopReason` | `EndTurn`, `ToolUse`, `MaxTokens`, `Unknown(String)` |
 | `UsageStats` | `input_tokens`, `output_tokens`, `total_tokens` |
 | `InferenceConfig` | `model`, `max_tokens`, `temperature` (all `Option`) |
 | `ToolDefinition` | `name`, `description`, `parameters` (JSON Schema `Value`) |
 | `ToolResult` | `content: String`, `is_error: bool` |
-| `StreamEvent` | `ContentDelta { text }`, `ToolUseDelta { … }`, `StopEvent`, `Error` |
+| `StreamEvent` | `ContentDelta { text }`, `ThinkingDelta { text }`, `ToolUseDelta { … }`, `StopEvent`, `Error`, `UsageEvent { input_tokens, output_tokens }` |
 | `ModelInfo` | `id`, `object`, `created`, `owned_by` |

@@ -2,6 +2,7 @@ mod builder;
 pub use builder::AgentBuilder;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use futures::StreamExt;
 use futures::future::join_all;
@@ -34,10 +35,20 @@ pub struct Agent {
     streaming_handler: Option<Arc<dyn StreamingHandler>>,
     approval_handler: Option<Arc<dyn ToolApprovalHandler>>,
     lifecycle_hook: Option<Arc<dyn ToolLifecycleHook>>,
+    /// Input tokens reported by the provider for the most recent completed turn.
+    last_turn_input_tokens: Arc<AtomicU32>,
 }
 
 impl Agent {
     // ── Public API ────────────────────────────────────────────────────
+
+    /// Input tokens reported by the provider for the most recently completed turn.
+    ///
+    /// Returns 0 until the first successful turn completes or if the provider
+    /// does not report usage statistics. Updated atomically after every turn.
+    pub fn last_turn_input_tokens(&self) -> u32 {
+        self.last_turn_input_tokens.load(Ordering::Relaxed)
+    }
 
     /// Send a user message and return the assistant's response text.
     ///
@@ -54,6 +65,8 @@ impl Agent {
             "agent.chat",
             conversation_id = conversation_id,
             otel.status_code = tracing::field::Empty,
+            llm.stop_reason = tracing::field::Empty,
+            llm.iterations = tracing::field::Empty,
         );
         self.chat_inner(conversation_id, user_message)
             .instrument(span)
@@ -80,6 +93,8 @@ impl Agent {
             "agent.chat_stream",
             conversation_id = conversation_id,
             otel.status_code = tracing::field::Empty,
+            llm.stop_reason = tracing::field::Empty,
+            llm.iterations = tracing::field::Empty,
         );
         self.chat_stream_inner(conversation_id, user_message)
             .instrument(span)
@@ -108,6 +123,8 @@ impl Agent {
             .chat_completion(&messages, &tool_defs, &config)
             .await?;
 
+        let mut iterations: u64 = 1;
+
         for _iteration in 0..self.max_iterations {
             match response.stop_reason {
                 StopReason::ToolUse => {
@@ -122,8 +139,33 @@ impl Agent {
                         .provider
                         .chat_completion(&messages, &tool_defs, &config)
                         .await?;
+                    iterations += 1;
                 }
                 StopReason::EndTurn | StopReason::MaxTokens | StopReason::Unknown(_) => {
+                    let span = tracing::Span::current();
+                    span.record("llm.stop_reason", response.stop_reason.as_str());
+                    span.record("llm.iterations", iterations);
+                    if let Some(usage) = &response.usage {
+                        self.last_turn_input_tokens
+                            .store(usage.input_tokens, Ordering::Relaxed);
+                    }
+                    // Emit thinking content via the streaming handler so it displays
+                    // in the terminal even in non-streaming mode.
+                    if let (Some(thinking_text), Some(handler)) =
+                        (&response.thinking, &self.streaming_handler)
+                    {
+                        let _ = handler
+                            .on_chunk(&StreamEvent::ThinkingDelta {
+                                text: thinking_text.clone(),
+                            })
+                            .await;
+                        // Empty ContentDelta closes the thinking box without printing anything.
+                        let _ = handler
+                            .on_chunk(&StreamEvent::ContentDelta {
+                                text: String::new(),
+                            })
+                            .await;
+                    }
                     self.store_assistant_message(conversation_id, response.content.clone())
                         .await?;
                     return Ok(Self::collect_text(&response.content));
@@ -153,22 +195,49 @@ impl Agent {
         let tool_defs = self.tool_registry.tool_definitions().await;
         let config = self.inference_config.clone();
 
+        let mut iterations: u64 = 0;
+
         for _iteration in 0..=self.max_iterations {
-            let messages = self.build_messages(conversation_id).await?;
+            iterations += 1;
 
-            let mut stream = match self
-                .provider
-                .chat_completion_stream(&messages, &tool_defs, &config)
-                .await
-            {
-                Ok(s) => s,
-                Err(e) => {
-                    handler.on_error(&e).await;
-                    return Err(e);
+            let call_span = tracing::info_span!(
+                "llm.chat_completion_stream",
+                otel.status_code = tracing::field::Empty,
+                llm.input_tokens = tracing::field::Empty,
+                llm.output_tokens = tracing::field::Empty,
+                llm.stop_reason = tracing::field::Empty,
+            );
+            let handler_ref = handler.clone();
+            let tool_defs_ref = tool_defs.clone();
+            let config_ref = config.clone();
+            let accumulated = {
+                let messages = self.build_messages(conversation_id).await?;
+                async move {
+                    let mut stream = match self
+                        .provider
+                        .chat_completion_stream(&messages, &tool_defs_ref, &config_ref)
+                        .await
+                    {
+                        Ok(s) => s,
+                        Err(e) => {
+                            tracing::Span::current().record("otel.status_code", "ERROR");
+                            handler_ref.on_error(&e).await;
+                            return Err(e);
+                        }
+                    };
+                    let acc = self.consume_stream(&mut stream, &handler_ref).await?;
+                    if let Some(t) = acc.input_tokens {
+                        tracing::Span::current().record("llm.input_tokens", t);
+                    }
+                    if let Some(t) = acc.output_tokens {
+                        tracing::Span::current().record("llm.output_tokens", t);
+                    }
+                    tracing::Span::current().record("llm.stop_reason", acc.stop_reason.as_str());
+                    Ok(acc)
                 }
+                .instrument(call_span)
+                .await?
             };
-
-            let accumulated = self.consume_stream(&mut stream, &handler).await?;
 
             match accumulated.stop_reason {
                 StopReason::ToolUse => {
@@ -182,6 +251,12 @@ impl Agent {
                         .await?;
                 }
                 StopReason::EndTurn | StopReason::MaxTokens | StopReason::Unknown(_) => {
+                    let span = tracing::Span::current();
+                    span.record("llm.stop_reason", accumulated.stop_reason.as_str());
+                    span.record("llm.iterations", iterations);
+                    if let Some(tokens) = accumulated.input_tokens {
+                        self.last_turn_input_tokens.store(tokens, Ordering::Relaxed);
+                    }
                     self.store_assistant_message(
                         conversation_id,
                         vec![ContentBlock::Text {
@@ -250,7 +325,10 @@ impl Agent {
         content
             .iter()
             .filter_map(|block| {
-                if let ContentBlock::ToolUse { id, name, input } = block {
+                if let ContentBlock::ToolUse {
+                    id, name, input, ..
+                } = block
+                {
                     Some((id.clone(), name.clone(), input.clone()))
                 } else {
                     None
@@ -290,6 +368,7 @@ impl Agent {
                 id: call.id.clone(),
                 name: call.name.clone(),
                 input: Self::parse_tool_input(&call.input_json),
+                provider_metadata: call.provider_metadata.clone(),
             });
         }
         blocks
@@ -421,13 +500,19 @@ impl Agent {
                             id,
                             name,
                             input_delta,
+                            provider_metadata,
                         } => {
                             if !id.is_empty() {
-                                acc.tool_calls.push(StreamedToolCall {
+                                let mut call = StreamedToolCall {
                                     id: id.clone(),
                                     name: name.clone().unwrap_or_default(),
                                     input_json: String::new(),
-                                });
+                                    provider_metadata: provider_metadata.clone(),
+                                };
+                                if let Some(delta) = input_delta {
+                                    call.input_json.push_str(delta);
+                                }
+                                acc.tool_calls.push(call);
                             } else if let (Some(last), Some(delta)) =
                                 (acc.tool_calls.last_mut(), input_delta)
                             {
@@ -437,6 +522,14 @@ impl Agent {
                         StreamEvent::StopEvent { stop_reason } => {
                             acc.stop_reason = stop_reason.clone();
                         }
+                        StreamEvent::UsageEvent {
+                            input_tokens,
+                            output_tokens,
+                        } => {
+                            acc.input_tokens = Some(*input_tokens);
+                            acc.output_tokens = Some(*output_tokens);
+                        }
+                        StreamEvent::ThinkingDelta { .. } => {}
                         StreamEvent::Error { message } => {
                             let err = KovaError::Stream(message.clone());
                             handler.on_error(&err).await;
@@ -451,6 +544,13 @@ impl Agent {
             }
         }
 
+        // Gemini sends finishReason in the *last* chunk, which may not contain
+        // function calls. Prefer content: if we accumulated any tool calls,
+        // the stop reason must be ToolUse regardless of what StopEvent said.
+        if !acc.tool_calls.is_empty() {
+            acc.stop_reason = StopReason::ToolUse;
+        }
+
         Ok(acc)
     }
 }
@@ -462,6 +562,7 @@ struct StreamedToolCall {
     id: String,
     name: String,
     input_json: String,
+    provider_metadata: Option<serde_json::Value>,
 }
 
 /// State accumulated while consuming a streaming response.
@@ -469,6 +570,8 @@ struct StreamAccumulator {
     text: String,
     tool_calls: Vec<StreamedToolCall>,
     stop_reason: StopReason,
+    input_tokens: Option<u32>,
+    output_tokens: Option<u32>,
 }
 
 impl Default for StreamAccumulator {
@@ -477,6 +580,8 @@ impl Default for StreamAccumulator {
             text: String::new(),
             tool_calls: Vec::new(),
             stop_reason: StopReason::EndTurn,
+            input_tokens: None,
+            output_tokens: None,
         }
     }
 }

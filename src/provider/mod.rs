@@ -1,6 +1,8 @@
 pub mod bedrock;
 pub mod config;
+pub mod gemini;
 pub(crate) mod http;
+pub mod ollama;
 pub mod openai;
 
 use std::pin::Pin;

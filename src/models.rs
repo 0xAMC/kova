@@ -23,6 +23,10 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        // Provider-specific data that must be round-tripped verbatim in conversation history.
+        // e.g. Gemini thinking models store {"thoughtSignature": "<blob>"} here.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        provider_metadata: Option<serde_json::Value>,
     },
     ToolResult {
         tool_use_id: String,
@@ -49,6 +53,17 @@ pub enum StopReason {
     Unknown(String),
 }
 
+impl StopReason {
+    pub fn as_str(&self) -> &str {
+        match self {
+            StopReason::EndTurn => "end_turn",
+            StopReason::ToolUse => "tool_use",
+            StopReason::MaxTokens => "max_tokens",
+            StopReason::Unknown(s) => s.as_str(),
+        }
+    }
+}
+
 // ── Usage Stats ────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -65,6 +80,9 @@ pub struct ModelResponse {
     pub content: Vec<ContentBlock>,
     pub stop_reason: StopReason,
     pub usage: Option<UsageStats>,
+    /// Thinking/reasoning text from the model (not stored in conversation history).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
 }
 
 // ── Inference Config ───────────────────────────────────────────────
@@ -96,9 +114,17 @@ pub enum StreamEvent {
         id: String,
         name: Option<String>,
         input_delta: Option<String>,
+        provider_metadata: Option<serde_json::Value>,
     },
     StopEvent {
         stop_reason: StopReason,
+    },
+    ThinkingDelta {
+        text: String,
+    },
+    UsageEvent {
+        input_tokens: u32,
+        output_tokens: u32,
     },
     Error {
         message: String,

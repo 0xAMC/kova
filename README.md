@@ -4,7 +4,7 @@
 [![Docs.rs](https://docs.rs/kova-sdk/badge.svg)](https://docs.rs/kova-sdk)
 [![License](https://img.shields.io/crates/l/kova-sdk.svg)](LICENSE)
 
-Async-first Rust library for building LLM-powered agents. Trait-based architecture with pluggable providers, tool calling, memory, streaming, MCP integration, multi-agent orchestration, and telemetry.
+Async-first Rust library for building LLM-powered agents. Trait-based architecture with pluggable providers, tool calling, memory, streaming, thinking-model support, MCP integration, multi-agent orchestration, and telemetry.
 
 ## Installation
 
@@ -27,7 +27,7 @@ cargo add kova-sdk
 ```
 kova
 ├── agent        # Agent + AgentBuilder — the main orchestration loop
-├── provider     # LlmProvider trait + OpenAI / Bedrock implementations
+├── provider     # LlmProvider trait + OpenAI / Bedrock / Gemini / Ollama implementations
 ├── tool         # Tool trait + thread-safe ToolRegistry
 ├── memory       # MemoryStore trait + InMemoryStore
 ├── mcp          # MCP client (stdio / HTTP+SSE) + McpTool adapter
@@ -37,6 +37,17 @@ kova
 ├── models       # Shared data types (messages, content blocks, events)
 └── error        # Unified KovaError enum
 ```
+
+## Providers
+
+| Provider | Auth | Thinking models |
+|----------|------|-----------------|
+| `OpenAiCompatibleProvider` | Bearer token | `with_reasoning_effort("high")` for o-series models |
+| `BedrockProvider` | SigV4 (explicit / profile / default chain) | `with_additional_model_request_fields(json!({"budgetTokens": N}))` for Claude |
+| `GeminiProvider` | `x-goog-api-key` | `with_thinking_budget(N)` for `gemini-3.5-*` models etc |
+| `OllamaProvider` | None (local) | `with_think(OllamaThink::High)` for `qwen3`, `deepseek-r1`, etc. |
+
+Chain-of-thought output from thinking models is returned in `ModelResponse::thinking` and never stored in conversation history. During streaming it arrives as `StreamEvent::ThinkingDelta`; in blocking mode the agent forwards it to any registered `StreamingHandler`.
 
 ## Quick Start
 

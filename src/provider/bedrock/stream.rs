@@ -62,6 +62,11 @@ pub(super) fn parse_event_stream_frame(
     })?;
 
     let payload = message.payload();
+    tracing::debug!(
+        event_type = ?event_type_str,
+        payload = %String::from_utf8_lossy(payload),
+        "Bedrock stream frame"
+    );
 
     match event_type_str.as_str() {
         "contentBlockStart" => {
@@ -150,6 +155,7 @@ mod tests {
                         assert_eq!(tool_use_id, "tool-1");
                         assert_eq!(name, "search");
                     }
+                    other => panic!("Expected ToolUse start, got: {:?}", other),
                 }
             }
             other => panic!("Expected ContentBlockStart, got: {:?}", other),

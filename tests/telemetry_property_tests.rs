@@ -109,6 +109,7 @@ fn make_text_response(text: &str) -> ModelResponse {
             output_tokens: 5,
             total_tokens: 15,
         }),
+        thinking: None,
     }
 }
 
@@ -119,6 +120,7 @@ fn make_tool_call_response(calls: Vec<(&str, &str)>) -> ModelResponse {
             id: id.to_string(),
             name: name.to_string(),
             input: serde_json::json!({}),
+            provider_metadata: None,
         })
         .collect();
     ModelResponse {
@@ -129,6 +131,7 @@ fn make_tool_call_response(calls: Vec<(&str, &str)>) -> ModelResponse {
             output_tokens: 3,
             total_tokens: 11,
         }),
+        thinking: None,
     }
 }
 

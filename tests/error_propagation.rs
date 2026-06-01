@@ -104,6 +104,7 @@ impl LlmProvider for ToolCallThenTextProvider {
                 }],
                 stop_reason: StopReason::EndTurn,
                 usage: None,
+                thinking: None,
             })
         } else {
             // First call: request a tool call.
@@ -112,9 +113,11 @@ impl LlmProvider for ToolCallThenTextProvider {
                     id: "tc_1".to_string(),
                     name: "failing_tool".to_string(),
                     input: json!({}),
+                    provider_metadata: None,
                 }],
                 stop_reason: StopReason::ToolUse,
                 usage: None,
+                thinking: None,
             })
         }
     }

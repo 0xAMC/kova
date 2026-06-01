@@ -42,6 +42,7 @@ impl LlmProvider for SuffixProvider {
             }],
             stop_reason: StopReason::EndTurn,
             usage: None,
+            thinking: None,
         })
     }
 
@@ -123,6 +124,7 @@ impl LlmProvider for CapturingEchoProvider {
             }],
             stop_reason: StopReason::EndTurn,
             usage: None,
+            thinking: None,
         })
     }
 

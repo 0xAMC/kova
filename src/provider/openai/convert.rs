@@ -36,6 +36,7 @@ pub(crate) fn format_request(
                     oai_messages.push(OaiMessage {
                         role: "tool".to_string(),
                         content: Some(content.clone()),
+                        reasoning_content: None,
                         tool_calls: None,
                         tool_call_id: Some(tool_use_id.clone()),
                         name: None,
@@ -58,7 +59,9 @@ pub(crate) fn format_request(
         for block in &msg.content {
             match block {
                 ContentBlock::Text { text } => text_parts.push(text.clone()),
-                ContentBlock::ToolUse { id, name, input } => {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => {
                     tool_calls.push(OaiToolCall {
                         id: id.clone(),
                         call_type: "function".to_string(),
@@ -80,6 +83,7 @@ pub(crate) fn format_request(
             } else {
                 Some(text_parts.join(""))
             },
+            reasoning_content: None,
             tool_calls: if tool_calls.is_empty() {
                 None
             } else {
@@ -115,6 +119,8 @@ pub(crate) fn format_request(
         max_tokens: config.max_tokens,
         temperature: config.temperature,
         stream: None,
+        stream_options: None,
+        reasoning_effort: None,
     }
 }
 
@@ -156,6 +162,7 @@ pub(crate) fn format_response(
                 id: tc.id,
                 name: tc.function.name,
                 input,
+                provider_metadata: None,
             });
         }
     }
@@ -170,6 +177,7 @@ pub(crate) fn format_response(
         content,
         stop_reason,
         usage,
+        thinking: None,
     })
 }
 
@@ -188,11 +196,23 @@ fn map_finish_reason(reason: Option<&str>) -> StopReason {
 pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
     let mut events = Vec::new();
 
+    if let Some(usage) = chunk.usage {
+        events.push(StreamEvent::UsageEvent {
+            input_tokens: usage.prompt_tokens,
+            output_tokens: usage.completion_tokens,
+        });
+    }
+
     for choice in chunk.choices {
         if let Some(reason) = &choice.finish_reason {
             events.push(StreamEvent::StopEvent {
                 stop_reason: map_finish_reason(Some(reason)),
             });
+        }
+        if let Some(text) = &choice.delta.reasoning_content
+            && !text.is_empty()
+        {
+            events.push(StreamEvent::ThinkingDelta { text: text.clone() });
         }
         if let Some(text) = &choice.delta.content
             && !text.is_empty()
@@ -205,6 +225,7 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
                     id: tc_delta.id.clone().unwrap_or_default(),
                     name: tc_delta.function.as_ref().and_then(|f| f.name.clone()),
                     input_delta: tc_delta.function.as_ref().and_then(|f| f.arguments.clone()),
+                    provider_metadata: None,
                 });
             }
         }

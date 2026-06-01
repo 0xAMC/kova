@@ -42,6 +42,7 @@ chat(conversation_id, user_message)
        │    └─ continue loop
        │
        ├─ StopReason::EndTurn | MaxTokens | Unknown?
+       │    ├─ store input_tokens in last_turn_input_tokens (AtomicU32) if provider reports usage
        │    └─ store assistant message + return text
        │
        └─ loop limit hit → Err(KovaError::MaxIterations)
@@ -56,14 +57,22 @@ chat(conversation_id, user_message)
 ```
 LlmProvider (trait, object-safe)
  ├── OpenAiCompatibleProvider   ← reqwest + SSE parsing
- └── BedrockProvider            ← aws-sdk + SigV4 + ConverseStream
+ ├── BedrockProvider            ← aws-sdk + SigV4 + ConverseStream
+ ├── GeminiProvider             ← reqwest + SSE (alt=sse), x-goog-api-key, thinking-model filtering
+ └── OllamaProvider             ← reqwest + NDJSON streaming, no auth, /api/chat + /api/tags
 ```
 
-**Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes.
+**Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes. `ThinkingDelta` events are forwarded to the `StreamingHandler` but otherwise ignored by the accumulator.
 
-**OpenAI path override**: `OpenAiProviderConfig` exposes `with_chat_completions_path` and `with_models_path` so Azure deployments, local servers, and proxies can override the default `/v1/chat/completions` and `/v1/models` paths without subclassing.
+**OpenAI path override**: `OpenAiProviderConfig` exposes `with_chat_completions_path` and `with_models_path` so Azure deployments, local servers, and proxies can override the default `/v1/chat/completions` and `/v1/models` paths without subclassing. `with_reasoning_effort` sets the `reasoning_effort` field for o-series models.
 
-**Bedrock credential resolution**: explicit credentials → named profile → SDK default chain. The `BedrockProvider` resolves credentials once at construction; re-construction is required to rotate them.
+**Bedrock credential resolution**: explicit credentials → named profile → SDK default chain. The `BedrockProvider` resolves credentials once at construction; re-construction is required to rotate them. `BedrockProviderConfig::with_additional_model_request_fields` passes arbitrary JSON as `additionalModelRequestFields` in the Converse API request — used for model-specific knobs such as `budgetTokens` for extended thinking on Claude models.
+
+**Gemini path override**: `GeminiProviderConfig` exposes `with_base_url` and `with_api_version` for test servers and future API versions. Streaming requests append `?alt=sse` so the shared SSE parser handles Gemini stream chunks without a separate code path. `with_thinking_budget` controls the extended-thinking token budget (`-1` = dynamic, `0` = off, positive = cap).
+
+**Ollama streaming**: uses newline-delimited JSON (NDJSON) over `/api/chat` rather than SSE. Each line is a complete `OllamaResponse` object; the final chunk has `done: true` and carries token counts. The `OllamaThink` enum serialises as a bool (`true`) or string (`"high"` / `"medium"` / `"low"`) to match Ollama's `think` field.
+
+**Thinking/reasoning across all providers**: chain-of-thought output (OpenAI `reasoning_content`, Bedrock `ReasoningContent`, Gemini `thought: true`, Ollama `thinking` field) is extracted by each provider's converter and placed in `ModelResponse::thinking`. It is never written into the conversation history and is never re-submitted to the LLM. During streaming, reasoning text arrives as `StreamEvent::ThinkingDelta`. In the non-streaming `chat` path the agent replays any thinking text as `ThinkingDelta` + empty `ContentDelta` events to the registered `StreamingHandler` so callers see reasoning output in both modes.
 
 ## Tool Execution Model
 
@@ -130,6 +139,7 @@ Internal synchronisation primitives:
 | `InMemoryStore` | `RwLock` | Many reads, sequential append |
 | `McpClient` | `Mutex` | Ordered JSON-RPC request/response |
 | Tool parallelism | `Semaphore` | Bounded fan-out |
+| `last_turn_input_tokens` | `AtomicU32` | Lock-free token counter read from any thread |
 
 ## Telemetry Design
 

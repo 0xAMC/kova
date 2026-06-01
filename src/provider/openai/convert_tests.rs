@@ -1,6 +1,7 @@
 use super::*;
 use crate::provider::openai::types::{
-    OaiChatCompletionResponse, OaiChoice, OaiFunctionCall, OaiMessage, OaiToolCall, OaiUsage,
+    OaiChatCompletionResponse, OaiChoice, OaiChunkChoice, OaiDelta, OaiFunctionCall, OaiMessage,
+    OaiResponseChunk, OaiToolCall, OaiUsage,
 };
 use proptest::prelude::*;
 use serde_json::json;
@@ -36,6 +37,7 @@ fn sample_oai_response() -> OaiChatCompletionResponse {
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             finish_reason: Some("stop".to_string()),
         }],
@@ -99,6 +101,7 @@ fn test_format_request_tool_use_content_block() {
             id: "call_1".to_string(),
             name: "get_weather".to_string(),
             input: json!({"city": "Seattle"}),
+            provider_metadata: None,
         }],
     }];
     let req = format_request(&messages, &[], &sample_config());
@@ -178,6 +181,7 @@ fn test_format_response_tool_calls_finish_reason() {
                 }]),
                 tool_call_id: None,
                 name: None,
+                reasoning_content: None,
             },
             finish_reason: Some("tool_calls".to_string()),
         }],
@@ -234,7 +238,12 @@ fn arb_tool_use_block() -> impl Strategy<Value = ContentBlock> {
         "[a-z_]{2,15}",
         Just(json!({"key": "value"})),
     )
-        .prop_map(|(id, name, input)| ContentBlock::ToolUse { id, name, input })
+        .prop_map(|(id, name, input)| ContentBlock::ToolUse {
+            id,
+            name,
+            input,
+            provider_metadata: None,
+        })
 }
 
 fn arb_text_only_assistant() -> impl Strategy<Value = (ConversationMessage, StopReason)> {
@@ -376,14 +385,14 @@ proptest! {
             if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
         }).collect();
         let expected_tool_uses: Vec<(&str, &str, &serde_json::Value)> = assistant_msg.content.iter().filter_map(|b| {
-            if let ContentBlock::ToolUse { id, name, input } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
+            if let ContentBlock::ToolUse { id, name, input, .. } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
         }).collect();
 
         let actual_texts: Vec<&str> = model_response.content.iter().filter_map(|b| {
             if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None }
         }).collect();
         let actual_tool_uses: Vec<(&str, &str, &serde_json::Value)> = model_response.content.iter().filter_map(|b| {
-            if let ContentBlock::ToolUse { id, name, input } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
+            if let ContentBlock::ToolUse { id, name, input, .. } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
         }).collect();
 
         prop_assert_eq!(actual_texts.join(""), expected_texts.join(""));
@@ -415,7 +424,7 @@ proptest! {
         prop_assert_eq!(oai_req.messages.len(), 1);
         let oai_msg = &oai_req.messages[0];
         let expected_tool_uses: Vec<(&str, &str, &serde_json::Value)> = assistant_msg.content.iter().filter_map(|b| {
-            if let ContentBlock::ToolUse { id, name, input } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
+            if let ContentBlock::ToolUse { id, name, input, .. } = b { Some((id.as_str(), name.as_str(), input)) } else { None }
         }).collect();
         prop_assert!(oai_msg.tool_calls.is_some());
         let tool_calls = oai_msg.tool_calls.as_ref().unwrap();
@@ -453,7 +462,7 @@ proptest! {
             choices: vec![OaiChoice {
                 index: 0,
                 message: OaiMessage { role: "assistant".to_string(), content: Some("hello".to_string()),
-                    tool_calls: None, tool_call_id: None, name: None },
+                    tool_calls: None, tool_call_id: None, name: None, reasoning_content: None },
                 finish_reason: Some(reason.clone()),
             }],
             usage: None,
@@ -470,7 +479,7 @@ proptest! {
             choices: vec![OaiChoice {
                 index: 0,
                 message: OaiMessage { role: role.clone(), content: Some("hello".to_string()),
-                    tool_calls: None, tool_call_id: None, name: None },
+                    tool_calls: None, tool_call_id: None, name: None, reasoning_content: None },
                 finish_reason: Some("stop".to_string()),
             }],
             usage: None,
@@ -486,4 +495,127 @@ proptest! {
             other => prop_assert!(false, "Expected KovaError::Provider, got {:?}", other),
         }
     }
+}
+
+// ── format_stream_event thinking / reasoning tests ────────────────
+
+fn make_chunk(
+    content: Option<&str>,
+    reasoning_content: Option<&str>,
+    finish_reason: Option<&str>,
+) -> OaiResponseChunk {
+    OaiResponseChunk {
+        id: "chunk-id".to_string(),
+        object: "chat.completion.chunk".to_string(),
+        created: 0,
+        model: "test-model".to_string(),
+        choices: vec![OaiChunkChoice {
+            index: 0,
+            delta: OaiDelta {
+                role: None,
+                content: content.map(str::to_string),
+                reasoning_content: reasoning_content.map(str::to_string),
+                tool_calls: None,
+            },
+            finish_reason: finish_reason.map(str::to_string),
+        }],
+        usage: None,
+    }
+}
+
+#[test]
+fn test_format_stream_event_reasoning_content_emits_thinking_delta() {
+    let chunk = make_chunk(None, Some("Let me reason..."), None);
+    let events = format_stream_event(chunk);
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0],
+        StreamEvent::ThinkingDelta {
+            text: "Let me reason...".to_string()
+        }
+    );
+}
+
+#[test]
+fn test_format_stream_event_reasoning_and_content_both_emitted() {
+    let chunk = make_chunk(Some("final answer"), Some("thinking first"), None);
+    let events = format_stream_event(chunk);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingDelta { text } if text == "thinking first")),
+        "ThinkingDelta should be emitted"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ContentDelta { text } if text == "final answer")),
+        "ContentDelta should be emitted"
+    );
+}
+
+#[test]
+fn test_format_stream_event_thinking_emitted_before_content() {
+    let chunk = make_chunk(Some("answer"), Some("thought"), None);
+    let events = format_stream_event(chunk);
+    let thinking_pos = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::ThinkingDelta { .. }));
+    let content_pos = events
+        .iter()
+        .position(|e| matches!(e, StreamEvent::ContentDelta { .. }));
+    assert!(
+        thinking_pos < content_pos,
+        "ThinkingDelta should come before ContentDelta"
+    );
+}
+
+#[test]
+fn test_format_stream_event_empty_reasoning_content_not_emitted() {
+    let chunk = make_chunk(Some("answer"), Some(""), None);
+    let events = format_stream_event(chunk);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingDelta { .. })),
+        "Empty reasoning_content should not emit ThinkingDelta"
+    );
+}
+
+#[test]
+fn test_format_stream_event_no_reasoning_content_no_thinking_delta() {
+    let chunk = make_chunk(Some("hello"), None, None);
+    let events = format_stream_event(chunk);
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingDelta { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ContentDelta { text } if text == "hello"))
+    );
+}
+
+#[test]
+fn test_format_stream_event_finish_reason_with_reasoning_all_emitted() {
+    let chunk = make_chunk(Some("done"), Some("reasoned"), Some("stop"));
+    let events = format_stream_event(chunk);
+    assert!(events.iter().any(|e| matches!(
+        e,
+        StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn
+        }
+    )));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingDelta { .. }))
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ContentDelta { .. }))
+    );
 }

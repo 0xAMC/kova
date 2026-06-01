@@ -41,6 +41,7 @@ pub struct TelemetryConfig {
     pub log_level: tracing::Level,
     pub exporter: ExporterConfig,
     pub sampling_rate: f64,
+    pub service_name: String,
 }
 
 impl Default for TelemetryConfig {
@@ -49,6 +50,7 @@ impl Default for TelemetryConfig {
             log_level: tracing::Level::INFO,
             exporter: ExporterConfig::Stdout,
             sampling_rate: 1.0,
+            service_name: "kova".to_string(),
         }
     }
 }
@@ -94,9 +96,14 @@ impl TelemetryConfig {
     fn init_with_otel(&self) -> Result<(), KovaError> {
         use opentelemetry::trace::TracerProvider as _;
         use opentelemetry_otlp::WithExportConfig;
+        use opentelemetry_sdk::Resource;
         use opentelemetry_sdk::trace::{Sampler, SdkTracerProvider};
         use tracing_opentelemetry::OpenTelemetryLayer;
         use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+        let resource = Resource::builder_empty()
+            .with_service_name(self.service_name.clone())
+            .build();
 
         let sampler = if (self.sampling_rate - 1.0_f64).abs() < f64::EPSILON {
             Sampler::AlwaysOn
@@ -112,6 +119,7 @@ impl TelemetryConfig {
                 SdkTracerProvider::builder()
                     .with_batch_exporter(exporter)
                     .with_sampler(sampler)
+                    .with_resource(resource)
                     .build()
             }
             ExporterConfig::Otlp { endpoint, protocol } => {
@@ -130,6 +138,7 @@ impl TelemetryConfig {
                 SdkTracerProvider::builder()
                     .with_batch_exporter(exporter)
                     .with_sampler(sampler)
+                    .with_resource(resource)
                     .build()
             }
             ExporterConfig::Jaeger { endpoint } => {
@@ -142,6 +151,7 @@ impl TelemetryConfig {
                 SdkTracerProvider::builder()
                     .with_batch_exporter(exporter)
                     .with_sampler(sampler)
+                    .with_resource(resource)
                     .build()
             }
         };
@@ -183,6 +193,12 @@ impl TelemetryConfigBuilder {
     /// Set the trace sampling rate (0.0 – 1.0).
     pub fn sampling_rate(mut self, rate: f64) -> Self {
         self.config.sampling_rate = rate.clamp(0.0, 1.0);
+        self
+    }
+
+    /// Set the `service.name` resource attribute reported to the OTEL backend.
+    pub fn service_name(mut self, name: impl Into<String>) -> Self {
+        self.config.service_name = name.into();
         self
     }
 
