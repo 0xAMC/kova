@@ -27,7 +27,7 @@ cargo add kova-sdk
 ```
 kova
 ├── agent        # Agent + AgentBuilder — the main orchestration loop
-├── provider     # LlmProvider trait + OpenAI / Bedrock / Gemini implementations
+├── provider     # LlmProvider trait + OpenAI / Bedrock / Gemini / Ollama implementations
 ├── tool         # Tool trait + thread-safe ToolRegistry
 ├── memory       # MemoryStore trait + InMemoryStore
 ├── mcp          # MCP client (stdio / HTTP+SSE) + McpTool adapter
@@ -44,7 +44,8 @@ kova
 |----------|------|-----------------|
 | `OpenAiCompatibleProvider` | Bearer token | `with_reasoning_effort("high")` for o-series models |
 | `BedrockProvider` | SigV4 (explicit / profile / default chain) | `with_additional_model_request_fields(json!({"budgetTokens": N}))` for Claude |
-| `GeminiProvider` | `x-goog-api-key` | `with_thinking_budget(N)` supportingmodels |
+| `GeminiProvider` | `x-goog-api-key` | `with_thinking_budget(N)` for `gemini-3.5-*` models etc |
+| `OllamaProvider` | None (local) | `with_think(OllamaThink::High)` for `qwen3`, `deepseek-r1`, etc. |
 
 Chain-of-thought output from thinking models is returned in `ModelResponse::thinking` and never stored in conversation history. During streaming it arrives as `StreamEvent::ThinkingDelta`; in blocking mode the agent forwards it to any registered `StreamingHandler`.
 

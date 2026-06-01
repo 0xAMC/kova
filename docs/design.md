@@ -58,7 +58,8 @@ chat(conversation_id, user_message)
 LlmProvider (trait, object-safe)
  ├── OpenAiCompatibleProvider   ← reqwest + SSE parsing
  ├── BedrockProvider            ← aws-sdk + SigV4 + ConverseStream
- └── GeminiProvider             ← reqwest + SSE (alt=sse), x-goog-api-key, thinking-model filtering
+ ├── GeminiProvider             ← reqwest + SSE (alt=sse), x-goog-api-key, thinking-model filtering
+ └── OllamaProvider             ← reqwest + NDJSON streaming, no auth, /api/chat + /api/tags
 ```
 
 **Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes. `ThinkingDelta` events are forwarded to the `StreamingHandler` but otherwise ignored by the accumulator.
@@ -69,7 +70,9 @@ LlmProvider (trait, object-safe)
 
 **Gemini path override**: `GeminiProviderConfig` exposes `with_base_url` and `with_api_version` for test servers and future API versions. Streaming requests append `?alt=sse` so the shared SSE parser handles Gemini stream chunks without a separate code path. `with_thinking_budget` controls the extended-thinking token budget (`-1` = dynamic, `0` = off, positive = cap).
 
-**Thinking/reasoning across all providers**: chain-of-thought output (OpenAI `reasoning_content`, Bedrock `ReasoningContent`, Gemini `thought: true` parts) is extracted by each provider's converter and placed in `ModelResponse::thinking`. It is never written into the conversation history and is never re-submitted to the LLM. During streaming, reasoning text arrives as `StreamEvent::ThinkingDelta`. In the non-streaming `chat` path the agent replays any thinking text as `ThinkingDelta` + empty `ContentDelta` events to the registered `StreamingHandler` so callers see reasoning output in both modes.
+**Ollama streaming**: uses newline-delimited JSON (NDJSON) over `/api/chat` rather than SSE. Each line is a complete `OllamaResponse` object; the final chunk has `done: true` and carries token counts. The `OllamaThink` enum serialises as a bool (`true`) or string (`"high"` / `"medium"` / `"low"`) to match Ollama's `think` field.
+
+**Thinking/reasoning across all providers**: chain-of-thought output (OpenAI `reasoning_content`, Bedrock `ReasoningContent`, Gemini `thought: true`, Ollama `thinking` field) is extracted by each provider's converter and placed in `ModelResponse::thinking`. It is never written into the conversation history and is never re-submitted to the LLM. During streaming, reasoning text arrives as `StreamEvent::ThinkingDelta`. In the non-streaming `chat` path the agent replays any thinking text as `ThinkingDelta` + empty `ContentDelta` events to the registered `StreamingHandler` so callers see reasoning output in both modes.
 
 ## Tool Execution Model
 
