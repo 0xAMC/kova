@@ -160,6 +160,45 @@ let provider = Arc::new(GeminiProvider::new(config)?);
 
 Streaming uses `alt=sse` to reuse the shared SSE parser. Chain-of-thought parts from thinking models (`thought: true`) are filtered from user-visible `content` and placed in `ModelResponse::thinking`; `thoughtSignature` is preserved as `provider_metadata` on tool-use blocks.
 
+### Ollama
+
+```rust
+use kova_sdk::provider::ollama::{OllamaProvider, OllamaProviderConfig, OllamaThink};
+
+// Local instance (default: http://localhost:11434)
+let config = OllamaProviderConfig::new("llama3.2");
+let provider = Arc::new(OllamaProvider::new(config)?);
+
+// Remote instance
+let config = OllamaProviderConfig::new("llama3.2")
+    .with_base_url("http://my-server:11434")
+    .with_timeout(Duration::from_secs(180))
+    .with_keep_alive("10m");
+
+// Thinking-capable model (qwen3, deepseek-r1, etc.)
+let config = OllamaProviderConfig::new("qwen3")
+    .with_think(OllamaThink::High);
+
+// Extra generation options
+use serde_json::json;
+let mut opts = serde_json::Map::new();
+opts.insert("temperature".into(), json!(0.7));
+opts.insert("num_ctx".into(), json!(8192));
+let config = OllamaProviderConfig::new("llama3.2")
+    .with_extra_options(opts);
+```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `model` | required | Ollama model identifier, e.g. `"llama3.2"`, `"qwen3"`, `"deepseek-r1"` |
+| `base_url` | `http://localhost:11434` | Ollama server URL |
+| `timeout` | 120s | Request timeout (local inference can be slow) |
+| `keep_alive` | `None` | Model keep-alive duration, e.g. `"5m"` or `"0"` to unload immediately |
+| `think` | `None` | `OllamaThink::Enabled` / `High` / `Medium` / `Low` — requires a thinking model |
+| `extra_options` | `None` | Merged into the `options` object (e.g. `top_k`, `seed`, `num_ctx`) |
+
+No API key is required. Streaming uses NDJSON over `/api/chat`; `list_models` uses `/api/tags`. Tool calls are supported. When `think` is set, reasoning text arrives as `StreamEvent::ThinkingDelta`.
+
 ### Custom Provider
 
 ```rust
