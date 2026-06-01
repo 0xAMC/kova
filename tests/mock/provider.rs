@@ -84,6 +84,7 @@ pub fn make_text_response(text: &str) -> ModelResponse {
             output_tokens: 5,
             total_tokens: 15,
         }),
+        thinking: None,
     }
 }
 
@@ -108,6 +109,7 @@ pub fn make_tool_call_response(
             output_tokens: 5,
             total_tokens: 15,
         }),
+        thinking: None,
     }
 }
 

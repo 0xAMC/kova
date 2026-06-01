@@ -73,7 +73,7 @@ impl LlmProvider for GeminiProvider {
         let _guard = span.enter();
 
         let merged = self.merge_config(config);
-        let gemini_request = format_request(messages, tools, &merged);
+        let gemini_request = format_request(messages, tools, &merged, self.config.thinking_budget);
         let url = self.config.generate_content_url(&model_name);
         let req = self.apply_auth(self.client.post(&url).json(&gemini_request));
 
@@ -139,7 +139,7 @@ impl LlmProvider for GeminiProvider {
         let _guard = span.enter();
 
         let merged = self.merge_config(config);
-        let gemini_request = format_request(messages, tools, &merged);
+        let gemini_request = format_request(messages, tools, &merged, self.config.thinking_budget);
         let url = self.config.stream_generate_content_url(&model_name);
         let req = self.apply_auth(self.client.post(&url).json(&gemini_request));
 

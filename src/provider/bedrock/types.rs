@@ -12,6 +12,9 @@ pub(crate) struct BedrockConverseRequest {
     pub(crate) inference_config: Option<BedrockInferenceConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tool_config: Option<BedrockToolConfig>,
+    /// Model-specific parameters passed through verbatim as `additionalModelRequestFields`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) additional_model_request_fields: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -37,6 +40,15 @@ pub(crate) enum BedrockContentBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         status: Option<String>,
     },
+    #[serde(rename_all = "camelCase")]
+    ReasoningContent {
+        reasoning_text: BedrockReasoningText,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct BedrockReasoningText {
+    pub(crate) text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -145,13 +157,27 @@ pub(crate) enum BedrockContentBlockStart {
         tool_use_id: String,
         name: String,
     },
+    ReasoningContent {
+        #[serde(rename = "reasoningType", default)]
+        #[allow(dead_code)]
+        reasoning_type: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum BedrockContentBlockDelta {
     Text(String),
-    ToolUse { input: String },
+    ToolUse {
+        input: String,
+    },
+    ReasoningContent {
+        #[serde(default)]
+        text: Option<String>,
+        #[serde(default)]
+        #[allow(dead_code)]
+        signature: Option<String>,
+    },
 }
 
 // ── Model listing types ────────────────────────────────────────────

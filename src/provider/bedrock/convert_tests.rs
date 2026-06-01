@@ -1,3 +1,4 @@
+use super::super::types::BedrockReasoningText;
 use super::*;
 use proptest::prelude::*;
 use serde_json::json;
@@ -229,7 +230,7 @@ proptest! {
     fn prop_content_block_round_trip(block in arb_content_block()) {
         let msg = message_for_block(&block);
         let config = InferenceConfig::default();
-        let request = format_request(&[msg], &[], &config);
+        let request = format_request(&[msg], &[], &config, None);
         let bedrock_blocks = request.messages[0].content.clone();
         let response = fake_response(bedrock_blocks);
         let model_resp = format_response(response).unwrap();
@@ -247,7 +248,7 @@ proptest! {
             role: Role::User,
             content: vec![ContentBlock::Text { text: "hi".to_string() }],
         };
-        let request = format_request(&[msg], &[], &config);
+        let request = format_request(&[msg], &[], &config, None);
         let json_val = serde_json::to_value(&request).unwrap();
         let inf = &json_val["inferenceConfig"];
         match max_tokens {
@@ -280,7 +281,7 @@ proptest! {
             role: Role::User,
             content: vec![ContentBlock::Text { text: "hi".to_string() }],
         };
-        let request = format_request(&[msg], &[tool], &InferenceConfig::default());
+        let request = format_request(&[msg], &[tool], &InferenceConfig::default(), None);
         let json_val = serde_json::to_value(&request).unwrap();
         let tool_spec = &json_val["toolConfig"]["tools"][0]["toolSpec"];
         prop_assert_eq!(tool_spec["name"].as_str().unwrap(), name.as_str());
@@ -303,7 +304,7 @@ proptest! {
                 content: vec![ContentBlock::Text { text: user_text.clone() }],
             },
         ];
-        let request = format_request(&messages, &[], &InferenceConfig::default());
+        let request = format_request(&messages, &[], &InferenceConfig::default(), None);
         let json_val = serde_json::to_value(&request).unwrap();
         let system_arr = json_val["system"].as_array().unwrap();
         let system_texts: Vec<&str> = system_arr.iter().map(|s| s["text"].as_str().unwrap()).collect();
@@ -360,7 +361,7 @@ fn test_format_request_serialization() {
             text: "Hello, world!".to_string(),
         }],
     };
-    let request = format_request(&[msg], &[], &InferenceConfig::default());
+    let request = format_request(&[msg], &[], &InferenceConfig::default(), None);
     let json_val = serde_json::to_value(&request).unwrap();
     assert_eq!(json_val["messages"][0]["role"], "user");
     assert_eq!(
@@ -423,7 +424,7 @@ fn test_tool_definition_complex_schema() {
             text: "hi".to_string(),
         }],
     };
-    let request = format_request(&[msg], &[tool], &InferenceConfig::default());
+    let request = format_request(&[msg], &[tool], &InferenceConfig::default(), None);
     let json_val = serde_json::to_value(&request).unwrap();
     let tool_spec = &json_val["toolConfig"]["tools"][0]["toolSpec"];
     assert_eq!(tool_spec["name"], "search");
@@ -459,7 +460,7 @@ fn test_system_message_extraction_mixed() {
             }],
         },
     ];
-    let request = format_request(&messages, &[], &InferenceConfig::default());
+    let request = format_request(&messages, &[], &InferenceConfig::default(), None);
     let json_val = serde_json::to_value(&request).unwrap();
     let system_arr = json_val["system"].as_array().unwrap();
     assert_eq!(system_arr.len(), 1);
@@ -515,7 +516,7 @@ fn test_empty_tools_no_tool_config() {
             text: "hi".to_string(),
         }],
     };
-    let request = format_request(&[msg], &[], &InferenceConfig::default());
+    let request = format_request(&[msg], &[], &InferenceConfig::default(), None);
     let json_val = serde_json::to_value(&request).unwrap();
     assert!(json_val.get("toolConfig").is_none());
 }
@@ -610,5 +611,205 @@ fn test_format_stream_event_metadata_emits_usage() {
             input_tokens: 10,
             output_tokens: 5,
         })
+    );
+}
+
+// ── Thinking / ReasoningContent tests ─────────────────────────────
+
+#[test]
+fn test_format_stream_event_reasoning_content_delta_emits_thinking_delta() {
+    let event = BedrockStreamEvent::ContentBlockDelta {
+        content_block_index: 0,
+        delta: BedrockContentBlockDelta::ReasoningContent {
+            text: Some("Let me think step by step.".to_string()),
+            signature: None,
+        },
+    };
+    assert_eq!(
+        format_stream_event(event),
+        Some(StreamEvent::ThinkingDelta {
+            text: "Let me think step by step.".to_string(),
+        })
+    );
+}
+
+#[test]
+fn test_format_stream_event_reasoning_content_empty_text_returns_none() {
+    let event = BedrockStreamEvent::ContentBlockDelta {
+        content_block_index: 0,
+        delta: BedrockContentBlockDelta::ReasoningContent {
+            text: Some(String::new()),
+            signature: None,
+        },
+    };
+    assert!(format_stream_event(event).is_none());
+}
+
+#[test]
+fn test_format_stream_event_reasoning_content_no_text_returns_none() {
+    let event = BedrockStreamEvent::ContentBlockDelta {
+        content_block_index: 0,
+        delta: BedrockContentBlockDelta::ReasoningContent {
+            text: None,
+            signature: None,
+        },
+    };
+    assert!(format_stream_event(event).is_none());
+}
+
+#[test]
+fn test_format_stream_event_reasoning_content_signature_only_returns_none() {
+    let event = BedrockStreamEvent::ContentBlockDelta {
+        content_block_index: 0,
+        delta: BedrockContentBlockDelta::ReasoningContent {
+            text: None,
+            signature: Some("sig-abc123".to_string()),
+        },
+    };
+    assert!(format_stream_event(event).is_none());
+}
+
+#[test]
+fn test_format_stream_event_reasoning_content_start_returns_none() {
+    let event = BedrockStreamEvent::ContentBlockStart {
+        content_block_index: 0,
+        start: BedrockContentBlockStart::ReasoningContent {
+            reasoning_type: None,
+        },
+    };
+    assert!(format_stream_event(event).is_none());
+}
+
+#[test]
+fn test_format_response_reasoning_content_populates_thinking_field() {
+    use super::super::types::{BedrockOutput, BedrockUsage};
+    let resp = BedrockConverseResponse {
+        output: BedrockOutput {
+            message: BedrockMessage {
+                role: "assistant".to_string(),
+                content: vec![
+                    BedrockContentBlock::ReasoningContent {
+                        reasoning_text: BedrockReasoningText {
+                            text: "I should add the numbers.".to_string(),
+                        },
+                    },
+                    BedrockContentBlock::Text("The answer is 42.".to_string()),
+                ],
+            },
+        },
+        stop_reason: "end_turn".to_string(),
+        usage: BedrockUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+        },
+    };
+    let model_resp = format_response(resp).unwrap();
+    assert_eq!(
+        model_resp.thinking,
+        Some("I should add the numbers.".to_string())
+    );
+    assert_eq!(model_resp.content.len(), 1);
+    assert_eq!(
+        model_resp.content[0],
+        ContentBlock::Text {
+            text: "The answer is 42.".to_string()
+        }
+    );
+}
+
+#[test]
+fn test_format_response_multiple_reasoning_blocks_joined() {
+    use super::super::types::{BedrockOutput, BedrockUsage};
+    let resp = BedrockConverseResponse {
+        output: BedrockOutput {
+            message: BedrockMessage {
+                role: "assistant".to_string(),
+                content: vec![
+                    BedrockContentBlock::ReasoningContent {
+                        reasoning_text: BedrockReasoningText {
+                            text: "First thought.".to_string(),
+                        },
+                    },
+                    BedrockContentBlock::ReasoningContent {
+                        reasoning_text: BedrockReasoningText {
+                            text: " Second thought.".to_string(),
+                        },
+                    },
+                    BedrockContentBlock::Text("Final answer.".to_string()),
+                ],
+            },
+        },
+        stop_reason: "end_turn".to_string(),
+        usage: BedrockUsage {
+            input_tokens: 5,
+            output_tokens: 3,
+            total_tokens: 8,
+        },
+    };
+    let model_resp = format_response(resp).unwrap();
+    assert_eq!(
+        model_resp.thinking,
+        Some("First thought. Second thought.".to_string())
+    );
+}
+
+#[test]
+fn test_format_response_reasoning_content_excluded_from_content_blocks() {
+    use super::super::types::{BedrockOutput, BedrockUsage};
+    let resp = BedrockConverseResponse {
+        output: BedrockOutput {
+            message: BedrockMessage {
+                role: "assistant".to_string(),
+                content: vec![BedrockContentBlock::ReasoningContent {
+                    reasoning_text: BedrockReasoningText {
+                        text: "thinking...".to_string(),
+                    },
+                }],
+            },
+        },
+        stop_reason: "end_turn".to_string(),
+        usage: BedrockUsage {
+            input_tokens: 2,
+            output_tokens: 1,
+            total_tokens: 3,
+        },
+    };
+    let model_resp = format_response(resp).unwrap();
+    assert!(
+        model_resp.content.is_empty(),
+        "ReasoningContent should not appear in content blocks"
+    );
+    assert!(model_resp.thinking.is_some());
+}
+
+#[test]
+fn test_format_response_empty_reasoning_text_not_included_in_thinking() {
+    use super::super::types::{BedrockOutput, BedrockUsage};
+    let resp = BedrockConverseResponse {
+        output: BedrockOutput {
+            message: BedrockMessage {
+                role: "assistant".to_string(),
+                content: vec![
+                    BedrockContentBlock::ReasoningContent {
+                        reasoning_text: BedrockReasoningText {
+                            text: String::new(),
+                        },
+                    },
+                    BedrockContentBlock::Text("answer".to_string()),
+                ],
+            },
+        },
+        stop_reason: "end_turn".to_string(),
+        usage: BedrockUsage {
+            input_tokens: 2,
+            output_tokens: 1,
+            total_tokens: 3,
+        },
+    };
+    let model_resp = format_response(resp).unwrap();
+    assert!(
+        model_resp.thinking.is_none(),
+        "Empty reasoning text should not populate thinking field"
     );
 }

@@ -5,6 +5,9 @@ pub(crate) struct OaiMessage {
     pub(crate) role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) content: Option<String>,
+    // DeepSeek uses "reasoning_content"; LM Studio / OpenAI o-series uses "reasoning"
+    #[serde(alias = "reasoning", skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tool_calls: Option<Vec<OaiToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,6 +49,9 @@ pub(crate) struct OaiChatCompletionRequest {
     pub(crate) stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stream_options: Option<OaiStreamOptions>,
+    // OpenAI o-series: "low" | "medium" | "high"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -113,6 +119,9 @@ pub(crate) struct OaiDelta {
     pub(crate) role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) content: Option<String>,
+    // DeepSeek uses "reasoning_content"; LM Studio / OpenAI o-series uses "reasoning"
+    #[serde(alias = "reasoning", skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) tool_calls: Option<Vec<OaiToolCallDelta>>,
 }

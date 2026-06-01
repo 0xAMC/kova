@@ -14,7 +14,7 @@ use futures::{Stream, StreamExt};
 use super::types::{
     GeminiCandidate, GeminiContent, GeminiFunctionCall, GeminiFunctionDeclaration,
     GeminiFunctionResponse, GeminiGenerationConfig, GeminiPart, GeminiRequest, GeminiResponse,
-    GeminiTool,
+    GeminiThinkingConfig, GeminiTool,
 };
 use crate::error::KovaError;
 use crate::models::{
@@ -47,6 +47,7 @@ pub(crate) fn format_request(
     messages: &[ConversationMessage],
     tools: &[ToolDefinition],
     config: &InferenceConfig,
+    thinking_budget: Option<i32>,
 ) -> GeminiRequest {
     let tool_id_map = build_tool_id_map(messages);
 
@@ -216,14 +217,22 @@ pub(crate) fn format_request(
         }])
     };
 
-    let generation_config = if config.max_tokens.is_some() || config.temperature.is_some() {
-        Some(GeminiGenerationConfig {
-            max_output_tokens: config.max_tokens,
-            temperature: config.temperature,
-        })
-    } else {
-        None
-    };
+    let thinking_config = thinking_budget.map(|budget| GeminiThinkingConfig {
+        thinking_budget: budget,
+        // budget == 0 disables thinking; any other value means we want thoughts visible.
+        include_thoughts: if budget != 0 { Some(true) } else { None },
+    });
+    let generation_config =
+        if config.max_tokens.is_some() || config.temperature.is_some() || thinking_config.is_some()
+        {
+            Some(GeminiGenerationConfig {
+                max_output_tokens: config.max_tokens,
+                temperature: config.temperature,
+                thinking_config,
+            })
+        } else {
+            None
+        };
 
     GeminiRequest {
         contents,
@@ -241,9 +250,9 @@ fn candidate_stop_reason(candidate: &GeminiCandidate) -> StopReason {
     // "STOP" even when function calls are present).
     let has_function_calls = candidate
         .content
-        .parts
-        .iter()
-        .any(|p| p.function_call.is_some());
+        .as_ref()
+        .map(|c| c.parts.iter().any(|p| p.function_call.is_some()))
+        .unwrap_or(false);
     if has_function_calls {
         return StopReason::ToolUse;
     }
@@ -268,10 +277,14 @@ pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelRespon
     let stop_reason = candidate_stop_reason(&candidate);
 
     let mut content: Vec<ContentBlock> = Vec::new();
-    for part in candidate.content.parts {
-        // Thinking models emit chain-of-thought parts with thought=true.
-        // Skip these: they are internal reasoning, not user-visible output.
+    let mut thinking_parts: Vec<String> = Vec::new();
+    for part in candidate.content.map(|c| c.parts).unwrap_or_default() {
         if part.thought == Some(true) {
+            if let Some(text) = part.text
+                && !text.is_empty()
+            {
+                thinking_parts.push(text);
+            }
             continue;
         }
         if let Some(text) = part.text
@@ -299,10 +312,17 @@ pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelRespon
         total_tokens: u.total_token_count,
     });
 
+    let thinking = if thinking_parts.is_empty() {
+        None
+    } else {
+        Some(thinking_parts.join(""))
+    };
+
     Ok(ModelResponse {
         content,
         stop_reason,
         usage,
+        thinking,
     })
 }
 
@@ -328,9 +348,13 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
     for candidate in chunk.candidates {
         let has_function_calls = candidate
             .content
-            .parts
-            .iter()
-            .any(|p| p.thought != Some(true) && p.function_call.is_some());
+            .as_ref()
+            .map(|c| {
+                c.parts
+                    .iter()
+                    .any(|p| p.thought != Some(true) && p.function_call.is_some())
+            })
+            .unwrap_or(false);
 
         if let Some(reason) = &candidate.finish_reason {
             let stop_reason = if has_function_calls {
@@ -345,9 +369,14 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
             events.push(StreamEvent::StopEvent { stop_reason });
         }
 
-        for part in candidate.content.parts {
-            // Skip chain-of-thought parts from thinking models.
+        for part in candidate.content.map(|c| c.parts).unwrap_or_default() {
             if part.thought == Some(true) {
+                if let Some(text) = part.text
+                    && !text.is_empty()
+                {
+                    tracing::debug!(chars = text.len(), "Gemini stream: thought part");
+                    events.push(StreamEvent::ThinkingDelta { text });
+                }
                 continue;
             }
             if let Some(text) = part.text
@@ -476,7 +505,7 @@ mod tests {
     #[test]
     fn test_user_message_maps_to_user_role() {
         let messages = vec![user_msg("Hello")];
-        let req = format_request(&messages, &[], &default_config());
+        let req = format_request(&messages, &[], &default_config(), None);
         assert_eq!(req.contents.len(), 1);
         assert_eq!(req.contents[0].role, "user");
         assert_eq!(req.contents[0].parts[0].text.as_deref(), Some("Hello"));
@@ -485,14 +514,14 @@ mod tests {
     #[test]
     fn test_assistant_message_maps_to_model_role() {
         let messages = vec![user_msg("Hi"), assistant_text_msg("Hello!")];
-        let req = format_request(&messages, &[], &default_config());
+        let req = format_request(&messages, &[], &default_config(), None);
         assert_eq!(req.contents[1].role, "model");
     }
 
     #[test]
     fn test_system_message_becomes_system_instruction() {
         let messages = vec![system_msg("You are helpful."), user_msg("Hi")];
-        let req = format_request(&messages, &[], &default_config());
+        let req = format_request(&messages, &[], &default_config(), None);
         // System message is NOT in contents
         assert_eq!(req.contents.len(), 1);
         assert!(req.system_instruction.is_some());
@@ -522,7 +551,7 @@ mod tests {
                 }],
             },
         ];
-        let req = format_request(&messages, &[], &default_config());
+        let req = format_request(&messages, &[], &default_config(), None);
         // Contents: user, model (tool call), user (function response)
         assert_eq!(req.contents.len(), 3);
         let fr_part = &req.contents[2].parts[0];
@@ -554,7 +583,7 @@ mod tests {
                 }],
             },
         ];
-        let req = format_request(&messages, &[], &default_config());
+        let req = format_request(&messages, &[], &default_config(), None);
         let fr = req.contents[2].parts[0].function_response.as_ref().unwrap();
         assert_eq!(fr.response["error"], "boom");
     }
@@ -567,7 +596,7 @@ mod tests {
             parameters: json!({ "type": "object", "properties": {} }),
         }];
         let messages = vec![user_msg("Search for cats")];
-        let req = format_request(&messages, &tools, &default_config());
+        let req = format_request(&messages, &tools, &default_config(), None);
         let gemini_tools = req.tools.unwrap();
         assert_eq!(gemini_tools.len(), 1);
         assert_eq!(gemini_tools[0].function_declarations[0].name, "search");
@@ -576,7 +605,7 @@ mod tests {
     #[test]
     fn test_empty_tools_omits_tools_field() {
         let messages = vec![user_msg("Hi")];
-        let req = format_request(&messages, &[], &default_config());
+        let req = format_request(&messages, &[], &default_config(), None);
         assert!(req.tools.is_none());
     }
 
@@ -587,7 +616,7 @@ mod tests {
             max_tokens: Some(512),
             temperature: Some(0.5),
         };
-        let req = format_request(&[user_msg("Hi")], &[], &config);
+        let req = format_request(&[user_msg("Hi")], &[], &config, None);
         let gc = req.generation_config.unwrap();
         assert_eq!(gc.max_output_tokens, Some(512));
         assert_eq!(gc.temperature, Some(0.5));
@@ -595,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_no_generation_config_when_defaults() {
-        let req = format_request(&[user_msg("Hi")], &[], &default_config());
+        let req = format_request(&[user_msg("Hi")], &[], &default_config(), None);
         assert!(req.generation_config.is_none());
     }
 
@@ -604,10 +633,10 @@ mod tests {
     fn make_response(finish_reason: Option<&str>, parts: Vec<GeminiPart>) -> GeminiResponse {
         GeminiResponse {
             candidates: vec![GeminiCandidate {
-                content: GeminiContent {
+                content: Some(GeminiContent {
                     role: "model".to_string(),
                     parts,
-                },
+                }),
                 finish_reason: finish_reason.map(|s| s.to_string()),
             }],
             usage_metadata: None,
@@ -722,7 +751,7 @@ mod tests {
         use super::super::types::GeminiUsageMetadata;
         let resp = GeminiResponse {
             candidates: vec![GeminiCandidate {
-                content: GeminiContent {
+                content: Some(GeminiContent {
                     role: "model".to_string(),
                     parts: vec![GeminiPart {
                         text: Some("Hi".to_string()),
@@ -731,7 +760,7 @@ mod tests {
                         function_response: None,
                         thought_signature: None,
                     }],
-                },
+                }),
                 finish_reason: Some("STOP".to_string()),
             }],
             usage_metadata: Some(GeminiUsageMetadata {
@@ -745,5 +774,371 @@ mod tests {
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.total_tokens, 15);
+    }
+
+    // ── Thinking / thought part tests ──────────────────────────────
+
+    fn thought_part(text: &str) -> GeminiPart {
+        GeminiPart {
+            text: Some(text.to_string()),
+            thought: Some(true),
+            function_call: None,
+            function_response: None,
+            thought_signature: None,
+        }
+    }
+
+    fn text_part(text: &str) -> GeminiPart {
+        GeminiPart {
+            text: Some(text.to_string()),
+            thought: None,
+            function_call: None,
+            function_response: None,
+            thought_signature: None,
+        }
+    }
+
+    #[test]
+    fn test_thinking_part_populates_thinking_field() {
+        let resp = make_response(
+            Some("STOP"),
+            vec![
+                thought_part("I need to consider this carefully."),
+                text_part("Here's the answer."),
+            ],
+        );
+        let model_resp = format_response(resp).unwrap();
+        assert_eq!(
+            model_resp.thinking,
+            Some("I need to consider this carefully.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_thinking_part_excluded_from_content_blocks() {
+        let resp = make_response(
+            Some("STOP"),
+            vec![
+                thought_part("internal reasoning"),
+                text_part("visible answer"),
+            ],
+        );
+        let model_resp = format_response(resp).unwrap();
+        assert_eq!(model_resp.content.len(), 1);
+        assert!(
+            matches!(&model_resp.content[0], ContentBlock::Text { text } if text == "visible answer")
+        );
+    }
+
+    #[test]
+    fn test_multiple_thinking_parts_joined() {
+        let resp = make_response(
+            Some("STOP"),
+            vec![
+                thought_part("Step 1: "),
+                thought_part("Step 2."),
+                text_part("Done."),
+            ],
+        );
+        let model_resp = format_response(resp).unwrap();
+        assert_eq!(model_resp.thinking, Some("Step 1: Step 2.".to_string()));
+    }
+
+    #[test]
+    fn test_empty_thinking_text_not_included_in_thinking_field() {
+        let resp = make_response(
+            Some("STOP"),
+            vec![
+                GeminiPart {
+                    text: Some(String::new()),
+                    thought: Some(true),
+                    function_call: None,
+                    function_response: None,
+                    thought_signature: None,
+                },
+                text_part("response"),
+            ],
+        );
+        let model_resp = format_response(resp).unwrap();
+        assert!(
+            model_resp.thinking.is_none(),
+            "Empty thought text should not populate thinking field"
+        );
+    }
+
+    #[test]
+    fn test_thinking_only_response_has_no_content_blocks() {
+        let resp = make_response(Some("STOP"), vec![thought_part("pure thinking, no output")]);
+        let model_resp = format_response(resp).unwrap();
+        assert!(model_resp.content.is_empty());
+        assert!(model_resp.thinking.is_some());
+    }
+
+    // ── format_stream_events thinking tests ────────────────────────
+
+    #[test]
+    fn test_format_stream_events_thought_part_emits_thinking_delta() {
+        let chunk = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: "model".to_string(),
+                    parts: vec![thought_part("thinking aloud")],
+                }),
+                finish_reason: None,
+            }],
+            usage_metadata: None,
+        };
+        let events = format_stream_events(chunk);
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0],
+            StreamEvent::ThinkingDelta {
+                text: "thinking aloud".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_format_stream_events_empty_thought_not_emitted() {
+        let chunk = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: "model".to_string(),
+                    parts: vec![GeminiPart {
+                        text: Some(String::new()),
+                        thought: Some(true),
+                        function_call: None,
+                        function_response: None,
+                        thought_signature: None,
+                    }],
+                }),
+                finish_reason: None,
+            }],
+            usage_metadata: None,
+        };
+        let events = format_stream_events(chunk);
+        assert!(
+            events.is_empty(),
+            "empty thought text should not produce ThinkingDelta"
+        );
+    }
+
+    #[test]
+    fn test_format_stream_events_mixed_thinking_and_content() {
+        let chunk = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: "model".to_string(),
+                    parts: vec![thought_part("my reasoning"), text_part("my answer")],
+                }),
+                finish_reason: Some("STOP".to_string()),
+            }],
+            usage_metadata: None,
+        };
+        let events = format_stream_events(chunk);
+        // StopEvent, ThinkingDelta, ContentDelta (stop is emitted first, then parts)
+        assert!(
+            events.iter().any(
+                |e| matches!(e, StreamEvent::ThinkingDelta { text } if text == "my reasoning")
+            )
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ContentDelta { text } if text == "my answer"))
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::StopEvent {
+                stop_reason: StopReason::EndTurn
+            }
+        )));
+    }
+
+    #[test]
+    fn test_format_stream_events_thought_not_counted_as_function_call_for_stop() {
+        let chunk = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: "model".to_string(),
+                    parts: vec![thought_part("thinking only")],
+                }),
+                finish_reason: Some("STOP".to_string()),
+            }],
+            usage_metadata: None,
+        };
+        let events = format_stream_events(chunk);
+        // finish_reason=STOP with no real function_calls => StopReason::EndTurn
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::StopEvent {
+                stop_reason: StopReason::EndTurn
+            }
+        )));
+    }
+
+    // ── format_request thinking_budget tests ───────────────────────
+
+    #[test]
+    fn test_format_request_thinking_budget_sets_generation_config() {
+        let req = format_request(&[user_msg("Hi")], &[], &default_config(), Some(1024));
+        let gc = req
+            .generation_config
+            .expect("generation_config should be set");
+        let tc = gc.thinking_config.expect("thinking_config should be set");
+        assert_eq!(tc.thinking_budget, 1024);
+        assert_eq!(tc.include_thoughts, Some(true));
+    }
+
+    #[test]
+    fn test_format_request_zero_thinking_budget_disables_thinking() {
+        let req = format_request(&[user_msg("Hi")], &[], &default_config(), Some(0));
+        let gc = req
+            .generation_config
+            .expect("generation_config should be set");
+        let tc = gc.thinking_config.expect("thinking_config should be set");
+        assert_eq!(tc.thinking_budget, 0);
+        assert!(
+            tc.include_thoughts.is_none(),
+            "budget=0 should not set include_thoughts"
+        );
+    }
+
+    #[test]
+    fn test_format_request_negative_thinking_budget_enables_dynamic_thinking() {
+        let req = format_request(&[user_msg("Hi")], &[], &default_config(), Some(-1));
+        let gc = req
+            .generation_config
+            .expect("generation_config should be set");
+        let tc = gc.thinking_config.expect("thinking_config should be set");
+        assert_eq!(tc.thinking_budget, -1);
+        assert_eq!(tc.include_thoughts, Some(true));
+    }
+
+    #[test]
+    fn test_format_request_no_thinking_budget_no_generation_config_when_defaults() {
+        let req = format_request(&[user_msg("Hi")], &[], &default_config(), None);
+        assert!(req.generation_config.is_none());
+    }
+
+    // ── thoughtSignature round-trip tests ──────────────────────────
+
+    #[test]
+    fn test_format_request_thought_signature_in_tool_use_provider_metadata() {
+        let messages = vec![
+            user_msg("call the tool"),
+            ConversationMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "fc-1".to_string(),
+                    name: "my_tool".to_string(),
+                    input: json!({"x": 1}),
+                    provider_metadata: Some(json!({ "thoughtSignature": "sig-xyz" })),
+                }],
+            },
+        ];
+        let req = format_request(&messages, &[], &default_config(), None);
+        // The model content has the tool use part
+        let model_content = req
+            .contents
+            .iter()
+            .find(|c| c.role == "model")
+            .expect("model content");
+        let part = &model_content.parts[0];
+        assert_eq!(part.thought_signature.as_deref(), Some("sig-xyz"));
+    }
+
+    #[test]
+    fn test_format_request_tool_use_without_thought_signature_has_no_signature() {
+        let messages = vec![
+            user_msg("call the tool"),
+            ConversationMessage {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "fc-2".to_string(),
+                    name: "my_tool".to_string(),
+                    input: json!({}),
+                    provider_metadata: None,
+                }],
+            },
+        ];
+        let req = format_request(&messages, &[], &default_config(), None);
+        let model_content = req
+            .contents
+            .iter()
+            .find(|c| c.role == "model")
+            .expect("model content");
+        let part = &model_content.parts[0];
+        assert!(part.thought_signature.is_none());
+    }
+
+    #[test]
+    fn test_format_stream_events_function_call_with_thought_signature() {
+        let chunk = GeminiResponse {
+            candidates: vec![GeminiCandidate {
+                content: Some(GeminiContent {
+                    role: "model".to_string(),
+                    parts: vec![GeminiPart {
+                        text: None,
+                        thought: None,
+                        function_call: Some(GeminiFunctionCall {
+                            id: Some("fc-10".to_string()),
+                            name: "search".to_string(),
+                            args: json!({"q": "rust"}),
+                        }),
+                        function_response: None,
+                        thought_signature: Some("thought-sig-abc".to_string()),
+                    }],
+                }),
+                finish_reason: None,
+            }],
+            usage_metadata: None,
+        };
+        let events = format_stream_events(chunk);
+        let tool_delta = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::ToolUseDelta { .. }))
+            .expect("should have ToolUseDelta");
+        match tool_delta {
+            StreamEvent::ToolUseDelta {
+                provider_metadata, ..
+            } => {
+                let meta = provider_metadata
+                    .as_ref()
+                    .expect("should have provider_metadata");
+                assert_eq!(meta["thoughtSignature"], "thought-sig-abc");
+            }
+            _ => panic!("expected ToolUseDelta"),
+        }
+    }
+
+    #[test]
+    fn test_format_response_function_call_with_thought_signature_stores_provider_metadata() {
+        let resp = make_response(
+            Some("STOP"),
+            vec![GeminiPart {
+                text: None,
+                thought: None,
+                function_call: Some(GeminiFunctionCall {
+                    id: Some("fc-20".to_string()),
+                    name: "get_data".to_string(),
+                    args: json!({}),
+                }),
+                function_response: None,
+                thought_signature: Some("sig-round-trip".to_string()),
+            }],
+        );
+        let model_resp = format_response(resp).unwrap();
+        match &model_resp.content[0] {
+            ContentBlock::ToolUse {
+                provider_metadata, ..
+            } => {
+                let meta = provider_metadata
+                    .as_ref()
+                    .expect("should have provider_metadata");
+                assert_eq!(meta["thoughtSignature"], "sig-round-trip");
+            }
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
     }
 }

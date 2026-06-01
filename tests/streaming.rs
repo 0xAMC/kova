@@ -248,3 +248,183 @@ async fn test_streaming_accumulates_text_correctly() {
     let result = agent.chat_stream("conv5", "test").await.unwrap();
     assert_eq!(result, "The quick brown fox");
 }
+
+#[tokio::test]
+async fn test_streaming_thinking_delta_delivered_to_handler_not_in_text() {
+    let events = vec![
+        Ok(StreamEvent::ThinkingDelta {
+            text: "internal thought".into(),
+        }),
+        Ok(StreamEvent::ContentDelta {
+            text: "visible response".into(),
+        }),
+        Ok(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn,
+        }),
+    ];
+
+    let provider = Arc::new(StreamingMockProvider::new(events));
+    let handler = Arc::new(MockStreamingHandler::new());
+
+    let agent = AgentBuilder::new()
+        .provider(provider as Arc<dyn LlmProvider>)
+        .streaming_handler(handler.clone() as Arc<dyn StreamingHandler>)
+        .build()
+        .unwrap();
+
+    let result = agent.chat_stream("conv6", "hi").await.unwrap();
+
+    // Only content text is returned — thinking does not contribute
+    assert_eq!(result, "visible response");
+
+    // ThinkingDelta was delivered to the handler
+    let chunks = handler.chunks.lock().await;
+    assert!(
+        chunks.iter().any(
+            |e| matches!(e, StreamEvent::ThinkingDelta { text } if text == "internal thought")
+        ),
+        "ThinkingDelta should be delivered to the handler"
+    );
+}
+
+#[tokio::test]
+async fn test_streaming_thinking_delta_only_stream_returns_empty_text() {
+    // A stream that only has thinking and no actual content should return ""
+    let events = vec![
+        Ok(StreamEvent::ThinkingDelta {
+            text: "pure thought".into(),
+        }),
+        Ok(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn,
+        }),
+    ];
+
+    let provider = Arc::new(StreamingMockProvider::new(events));
+    let handler = Arc::new(MockStreamingHandler::new());
+
+    let agent = AgentBuilder::new()
+        .provider(provider as Arc<dyn LlmProvider>)
+        .streaming_handler(handler.clone() as Arc<dyn StreamingHandler>)
+        .build()
+        .unwrap();
+
+    let result = agent.chat_stream("conv7", "think").await.unwrap();
+    assert_eq!(result, "", "thinking-only stream should produce empty text");
+
+    let chunks = handler.chunks.lock().await;
+    assert!(
+        chunks
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ThinkingDelta { .. }))
+    );
+}
+
+#[tokio::test]
+async fn test_streaming_multiple_thinking_deltas_none_in_text() {
+    let events = vec![
+        Ok(StreamEvent::ThinkingDelta {
+            text: "step 1 ".into(),
+        }),
+        Ok(StreamEvent::ThinkingDelta {
+            text: "step 2".into(),
+        }),
+        Ok(StreamEvent::ContentDelta {
+            text: "answer".into(),
+        }),
+        Ok(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn,
+        }),
+    ];
+
+    let provider = Arc::new(StreamingMockProvider::new(events));
+    let handler = Arc::new(MockStreamingHandler::new());
+
+    let agent = AgentBuilder::new()
+        .provider(provider as Arc<dyn LlmProvider>)
+        .streaming_handler(handler.clone() as Arc<dyn StreamingHandler>)
+        .build()
+        .unwrap();
+
+    let result = agent.chat_stream("conv8", "q").await.unwrap();
+    assert_eq!(result, "answer");
+
+    let chunks = handler.chunks.lock().await;
+    let thinking_chunks: Vec<_> = chunks
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ThinkingDelta { .. }))
+        .collect();
+    assert_eq!(
+        thinking_chunks.len(),
+        2,
+        "both ThinkingDelta events should reach handler"
+    );
+}
+
+#[tokio::test]
+async fn test_streaming_usage_event_updates_last_turn_input_tokens() {
+    let events = vec![
+        Ok(StreamEvent::ContentDelta { text: "hi".into() }),
+        Ok(StreamEvent::UsageEvent {
+            input_tokens: 42,
+            output_tokens: 7,
+        }),
+        Ok(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn,
+        }),
+    ];
+
+    let provider = Arc::new(StreamingMockProvider::new(events));
+    let handler = Arc::new(MockStreamingHandler::new());
+
+    let agent = AgentBuilder::new()
+        .provider(provider as Arc<dyn LlmProvider>)
+        .streaming_handler(handler.clone() as Arc<dyn StreamingHandler>)
+        .build()
+        .unwrap();
+
+    let _ = agent.chat_stream("conv9", "test").await.unwrap();
+    assert_eq!(
+        agent.last_turn_input_tokens(),
+        42,
+        "last_turn_input_tokens should be updated from UsageEvent"
+    );
+}
+
+#[tokio::test]
+async fn test_streaming_usage_event_delivered_to_handler() {
+    let events = vec![
+        Ok(StreamEvent::UsageEvent {
+            input_tokens: 100,
+            output_tokens: 50,
+        }),
+        Ok(StreamEvent::ContentDelta {
+            text: "done".into(),
+        }),
+        Ok(StreamEvent::StopEvent {
+            stop_reason: StopReason::EndTurn,
+        }),
+    ];
+
+    let provider = Arc::new(StreamingMockProvider::new(events));
+    let handler = Arc::new(MockStreamingHandler::new());
+
+    let agent = AgentBuilder::new()
+        .provider(provider as Arc<dyn LlmProvider>)
+        .streaming_handler(handler.clone() as Arc<dyn StreamingHandler>)
+        .build()
+        .unwrap();
+
+    let _ = agent.chat_stream("conv10", "test").await.unwrap();
+
+    let chunks = handler.chunks.lock().await;
+    assert!(
+        chunks.iter().any(|e| matches!(
+            e,
+            StreamEvent::UsageEvent {
+                input_tokens: 100,
+                output_tokens: 50
+            }
+        )),
+        "UsageEvent should be delivered to the handler"
+    );
+}

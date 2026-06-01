@@ -14,6 +14,7 @@ pub(super) fn format_request(
     messages: &[ConversationMessage],
     tools: &[ToolDefinition],
     config: &InferenceConfig,
+    additional_model_request_fields: Option<serde_json::Value>,
 ) -> BedrockConverseRequest {
     let mut system_blocks: Vec<BedrockSystemBlock> = Vec::new();
     let mut bedrock_messages: Vec<BedrockMessage> = Vec::new();
@@ -107,27 +108,29 @@ pub(super) fn format_request(
         system,
         inference_config,
         tool_config,
+        additional_model_request_fields,
     }
 }
 
 pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResponse, KovaError> {
+    let mut thinking_parts: Vec<String> = Vec::new();
     let content = resp
         .output
         .message
         .content
         .into_iter()
-        .map(|block| match block {
-            BedrockContentBlock::Text(text) => ContentBlock::Text { text },
+        .filter_map(|block| match block {
+            BedrockContentBlock::Text(text) => Some(ContentBlock::Text { text }),
             BedrockContentBlock::ToolUse {
                 tool_use_id,
                 name,
                 input,
-            } => ContentBlock::ToolUse {
+            } => Some(ContentBlock::ToolUse {
                 id: tool_use_id,
                 name,
                 input,
                 provider_metadata: None,
-            },
+            }),
             BedrockContentBlock::ToolResult {
                 tool_use_id,
                 content,
@@ -139,14 +142,27 @@ pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResp
                     .collect::<Vec<_>>()
                     .join("");
                 let is_error = status.as_deref() == Some("error");
-                ContentBlock::ToolResult {
+                Some(ContentBlock::ToolResult {
                     tool_use_id,
                     content: text,
                     is_error,
+                })
+            }
+            // Collect thinking text but exclude from conversation history.
+            BedrockContentBlock::ReasoningContent { reasoning_text } => {
+                if !reasoning_text.text.is_empty() {
+                    thinking_parts.push(reasoning_text.text);
                 }
+                None
             }
         })
         .collect();
+
+    let thinking = if thinking_parts.is_empty() {
+        None
+    } else {
+        Some(thinking_parts.join(""))
+    };
 
     let stop_reason = map_stop_reason(&resp.stop_reason);
 
@@ -160,6 +176,7 @@ pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResp
         content,
         stop_reason,
         usage: Some(usage),
+        thinking,
     })
 }
 
@@ -182,6 +199,23 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
                 input_delta: Some(input),
                 provider_metadata: None,
             }),
+            BedrockContentBlockDelta::ReasoningContent {
+                text: Some(ref text),
+                ..
+            } if !text.is_empty() => {
+                tracing::debug!(
+                    len = text.len(),
+                    "Bedrock ReasoningContent delta → ThinkingDelta"
+                );
+                Some(StreamEvent::ThinkingDelta { text: text.clone() })
+            }
+            BedrockContentBlockDelta::ReasoningContent {
+                ref text,
+                ref signature,
+            } => {
+                tracing::debug!(text = ?text, signature = ?signature, "Bedrock ReasoningContent delta (empty/signature-only, skipped)");
+                None
+            }
         },
         BedrockStreamEvent::ContentBlockStart { start, .. } => match start {
             BedrockContentBlockStart::ToolUse { tool_use_id, name } => {
@@ -192,6 +226,7 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
                     provider_metadata: None,
                 })
             }
+            BedrockContentBlockStart::ReasoningContent { .. } => None,
         },
         BedrockStreamEvent::MessageStop { stop_reason } => Some(StreamEvent::StopEvent {
             stop_reason: map_stop_reason(&stop_reason),

@@ -69,6 +69,7 @@ async fn agent_chat_empty_content_returns_empty_string() {
         content: vec![],
         stop_reason: StopReason::EndTurn,
         usage: None,
+        thinking: None,
     };
 
     let provider = Arc::new(MockLlmProvider::with_response(resp));
