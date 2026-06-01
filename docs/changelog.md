@@ -8,7 +8,11 @@ All notable changes to the `kova-sdk` library are documented here.
 - `GeminiProvider` — new first-party provider for the Google Gemini API (`generativelanguage.googleapis.com`). Implements `LlmProvider` with `chat_completion`, `chat_completion_stream`, and `list_models`. Authenticates via `x-goog-api-key` header.
 - `GeminiProviderConfig` — fluent builder with `new(model)`, `with_api_key`, `with_timeout`, `with_base_url` (useful for mock servers), and `with_api_version`. Defaults to `v1beta` and a 60 s timeout.
 - Gemini streaming uses SSE (`alt=sse`) to reuse the shared SSE parser; `UsageEvent` is emitted from the final `usageMetadata` chunk.
-- Thinking-model support: chain-of-thought parts (`thought: true`) are filtered from user-visible output; `thoughtSignature` is preserved as `provider_metadata` on tool-use blocks for downstream tools that require it.
+- `GeminiProviderConfig::with_thinking_budget(budget: i32)` — controls the extended-thinking token budget: `-1` = dynamic/unlimited, `0` = disabled (default), positive value = hard cap. Only affects thinking-capable models (e.g. `gemini-2.5-flash`).
+- `OpenAiProviderConfig::with_reasoning_effort(effort)` — sets the `reasoning_effort` field for OpenAI o-series models. Accepted values: `"low"`, `"medium"`, `"high"`. Has no effect on non-reasoning models.
+- `BedrockProviderConfig::with_additional_model_request_fields(fields: serde_json::Value)` — passes arbitrary key/value pairs as `additionalModelRequestFields` in the Bedrock Converse API request. Use this for model-specific parameters not covered by `InferenceConfig` (e.g. `{"budgetTokens": 5000}` for extended thinking on Claude models).
+- `ModelResponse::thinking: Option<String>` — reasoning/chain-of-thought text produced by thinking models. Not stored in conversation history and not re-submitted to the LLM on subsequent turns.
+- `StreamEvent::ThinkingDelta { text }` — new stream event emitted when a model outputs chain-of-thought reasoning. Emitted by all three providers (OpenAI `reasoning_content`, Bedrock `ReasoningContent` deltas, Gemini `thought: true` parts). Also emitted by the non-streaming `chat` path when the response contains thinking text, so a `StreamingHandler` can display it in both modes.
 - `Agent::last_turn_input_tokens() -> u32` — returns the input token count reported by the provider for the most recently completed turn (both `chat` and `chat_stream` paths). Returns `0` until the first turn completes or if the provider does not report usage. Updated atomically after every turn via `Arc<AtomicU32>`.
 - `StreamEvent::UsageEvent { input_tokens, output_tokens }` — both OpenAI-compatible and Bedrock providers now emit this event during streaming so callers can track token consumption per call.
 - `StopReason::as_str()` helper for span attribute recording.
@@ -17,6 +21,10 @@ All notable changes to the `kova-sdk` library are documented here.
 - `OaiStreamOptions { include_usage: true }` sent on streaming requests to OpenAI-compatible providers to surface token counts in stream chunks.
 
 ### Changed
+- Bedrock `ReasoningContent` blocks are now parsed: thinking text is placed in `ModelResponse::thinking` and excluded from the `content` vector so it is never re-submitted as conversation history.
+- Bedrock `ReasoningContent` stream deltas now emit `StreamEvent::ThinkingDelta` instead of being silently dropped.
+- Gemini chain-of-thought parts (`thought: true`) now also populate `ModelResponse::thinking` in addition to being filtered from `content`.
+- Agent non-streaming path (`chat`) now forwards thinking text to the registered `StreamingHandler` via `ThinkingDelta` + empty `ContentDelta` events so callers see reasoning output in both streaming and blocking modes.
 - Bedrock `BedrockStreamEvent::Metadata` now maps to `StreamEvent::UsageEvent` instead of being silently dropped.
 
 ## 0.1.0 — Initial release

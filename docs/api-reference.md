@@ -63,6 +63,8 @@ let config = OpenAiProviderConfig::new("https://api.openai.com", "gpt-4")
     .with_timeout(Duration::from_secs(60))
     .with_max_tokens(4096)
     .with_temperature(0.7)
+    // OpenAI o-series reasoning models:
+    .with_reasoning_effort("high")
     // Azure:
     .with_api_version("2024-02-01")
     .with_chat_completions_path("/openai/deployments/gpt-4/chat/completions")
@@ -82,6 +84,7 @@ let provider = Arc::new(OpenAiCompatibleProvider::new(config)?);
 | `chat_completions_path` | `/v1/chat/completions` | Chat endpoint path |
 | `models_path` | `/v1/models` | Models list endpoint path |
 | `api_version` | `None` | Query param (e.g. Azure `api-version`) |
+| `reasoning_effort` | `None` | `"low"` / `"medium"` / `"high"` — o-series models only |
 
 ### AWS Bedrock
 
@@ -103,6 +106,10 @@ let config = BedrockProviderConfig::new("us-east-1", "anthropic.claude-sonnet-4-
 // Custom endpoint (LocalStack)
 let config = BedrockProviderConfig::new("us-east-1", "my-model")
     .with_endpoint_url("http://localhost:4566");
+
+// Extended thinking on Claude models (passes additionalModelRequestFields)
+let config = BedrockProviderConfig::new("us-east-1", "anthropic.claude-sonnet-4-20250514-v1:0")
+    .with_additional_model_request_fields(serde_json::json!({ "budgetTokens": 5000 }));
 ```
 
 **Credential resolution order:** explicit → named profile → default AWS chain.
@@ -117,6 +124,7 @@ let config = BedrockProviderConfig::new("us-east-1", "my-model")
 | `session_token` | `None` | STS session token |
 | `timeout` | 60s | Request timeout |
 | `endpoint_url` | `None` | Override endpoint |
+| `additional_model_request_fields` | `None` | Arbitrary JSON passed as `additionalModelRequestFields` |
 
 ### Google Gemini
 
@@ -132,6 +140,12 @@ let config = GeminiProviderConfig::new("gemini-2.0-flash")
     // Override API version (defaults to "v1beta"):
     .with_api_version("v1beta");
 
+// Enable extended thinking on thinking-capable models:
+// -1 = dynamic/unlimited, 0 = disabled (default), positive = token cap
+let config = GeminiProviderConfig::new("gemini-2.5-flash")
+    .with_api_key("AIza...")
+    .with_thinking_budget(5000);
+
 let provider = Arc::new(GeminiProvider::new(config)?);
 ```
 
@@ -142,8 +156,9 @@ let provider = Arc::new(GeminiProvider::new(config)?);
 | `timeout` | 60s | Request timeout |
 | `base_url` | `https://generativelanguage.googleapis.com` | API base URL |
 | `api_version` | `"v1beta"` | URL path segment before `/models/` |
+| `thinking_budget` | `None` (disabled) | Token budget for extended thinking: `-1` unlimited, `0` off, positive = cap |
 
-Streaming uses `alt=sse` to reuse the shared SSE parser. Chain-of-thought parts from thinking models (`thought: true`) are filtered from user-visible output; `thoughtSignature` is preserved as `provider_metadata` on tool-use blocks.
+Streaming uses `alt=sse` to reuse the shared SSE parser. Chain-of-thought parts from thinking models (`thought: true`) are filtered from user-visible `content` and placed in `ModelResponse::thinking`; `thoughtSignature` is preserved as `provider_metadata` on tool-use blocks.
 
 ### Custom Provider
 
@@ -274,7 +289,11 @@ struct MyHandler;
 #[async_trait]
 impl StreamingHandler for MyHandler {
     async fn on_chunk(&self, event: &StreamEvent) -> Result<(), KovaError> {
-        if let StreamEvent::ContentDelta { text } = event { print!("{text}"); }
+        match event {
+            StreamEvent::ThinkingDelta { text } => eprint!("{text}"),   // reasoning output
+            StreamEvent::ContentDelta { text } => print!("{text}"),     // visible response
+            _ => {}
+        }
         Ok(())
     }
     async fn on_complete(&self) -> Result<(), KovaError> { println!(); Ok(()) }
@@ -390,11 +409,11 @@ match result {
 | `Role` | `User`, `Assistant`, `System`, `Tool` |
 | `ContentBlock` | `Text { text }`, `ToolUse { id, name, input }`, `ToolResult { tool_use_id, content, is_error }` |
 | `ConversationMessage` | `role: Role` + `content: Vec<ContentBlock>` |
-| `ModelResponse` | `content`, `stop_reason`, `usage: Option<UsageStats>` |
+| `ModelResponse` | `content`, `stop_reason`, `usage: Option<UsageStats>`, `thinking: Option<String>` |
 | `StopReason` | `EndTurn`, `ToolUse`, `MaxTokens`, `Unknown(String)` |
 | `UsageStats` | `input_tokens`, `output_tokens`, `total_tokens` |
 | `InferenceConfig` | `model`, `max_tokens`, `temperature` (all `Option`) |
 | `ToolDefinition` | `name`, `description`, `parameters` (JSON Schema `Value`) |
 | `ToolResult` | `content: String`, `is_error: bool` |
-| `StreamEvent` | `ContentDelta { text }`, `ToolUseDelta { … }`, `StopEvent`, `Error`, `UsageEvent { input_tokens, output_tokens }` |
+| `StreamEvent` | `ContentDelta { text }`, `ThinkingDelta { text }`, `ToolUseDelta { … }`, `StopEvent`, `Error`, `UsageEvent { input_tokens, output_tokens }` |
 | `ModelInfo` | `id`, `object`, `created`, `owned_by` |

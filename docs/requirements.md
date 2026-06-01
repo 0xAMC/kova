@@ -15,7 +15,10 @@
 - Support tool/function calling in both blocking and streaming modes.
 - OpenAI provider must work with OpenAI, Azure OpenAI, Ollama, vLLM, and LM Studio without code changes.
 - Bedrock provider must resolve AWS credentials via explicit creds, named profile, or the default SDK chain.
-- Gemini provider must authenticate via `x-goog-api-key` and support thinking models (filter chain-of-thought parts from user-visible output).
+- Bedrock provider must forward arbitrary `additionalModelRequestFields` (e.g. `budgetTokens`) without requiring library changes.
+- Gemini provider must authenticate via `x-goog-api-key` and support thinking models with a configurable token budget.
+- OpenAI provider must support `reasoning_effort` for o-series models.
+- All providers must surface chain-of-thought output in `ModelResponse::thinking` (not in conversation history) and emit `StreamEvent::ThinkingDelta` during streaming.
 
 ### Tools
 - Define a `Tool` trait with `name`, `description`, `parameters_schema` (JSON Schema), and `execute`.
@@ -35,6 +38,7 @@
 ### Streaming
 - Define a `StreamingHandler` trait: `on_chunk`, `on_complete`, `on_error`.
 - Parse Server-Sent Events from provider streams and surface them as typed `StreamEvent`s.
+- Emit `StreamEvent::ThinkingDelta` for chain-of-thought reasoning text in both streaming and non-streaming modes.
 
 ### Orchestration
 - Coordinate multiple named `Agent` instances via three patterns:
