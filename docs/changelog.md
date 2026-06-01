@@ -4,6 +4,8 @@ All notable changes to the `kova-sdk` library are documented here.
 
 ## Unreleased
 
+## 0.2.0 — New providers for Gemini and Ollama
+
 ### Added
 - `OllamaProvider` — new first-party provider for locally-running Ollama instances. Implements `LlmProvider` with `chat_completion`, `chat_completion_stream`, and `list_models`. No API key required; connects to `http://localhost:11434` by default.
 - `OllamaProviderConfig` — fluent builder with `new(model)`, `with_base_url`, `with_timeout` (default 120 s), `with_keep_alive`, `with_think`, and `with_extra_options`. Streaming uses NDJSON over the `/api/chat` endpoint.
