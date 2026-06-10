@@ -1,8 +1,7 @@
-use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use futures::{Stream, StreamExt};
+use futures::Stream;
 
 use super::config::OllamaProviderConfig;
 use super::types::{
@@ -14,6 +13,7 @@ use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, Role, StopReason,
     StreamEvent, ToolDefinition, UsageStats,
 };
+use crate::streaming::line_stream::{LineOutcome, line_stream_to_events};
 
 static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -36,6 +36,12 @@ fn build_options(
     }
     if let Some(max) = config.max_tokens {
         opts.insert("num_predict".to_string(), serde_json::json!(max));
+    }
+    if let Some(top_p) = config.top_p {
+        opts.insert("top_p".to_string(), serde_json::json!(top_p));
+    }
+    if let Some(stop) = &config.stop_sequences {
+        opts.insert("stop".to_string(), serde_json::json!(stop));
     }
 
     if opts.is_empty() { None } else { Some(opts) }
@@ -305,6 +311,8 @@ pub(crate) fn format_stream_chunk(resp: OllamaResponse) -> Vec<StreamEvent> {
             name: Some(tc.function.name.clone()),
             input_delta,
             provider_metadata: None,
+            // Ollama delivers each tool call complete in one chunk.
+            index: None,
         });
     }
 
@@ -332,73 +340,19 @@ pub(crate) fn format_stream_chunk(resp: OllamaResponse) -> Vec<StreamEvent> {
 pub(crate) fn ndjson_byte_stream_to_events(
     byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
 ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>> {
-    let mapped =
-        byte_stream.map(|r| r.map_err(|e| KovaError::Stream(format!("Connection error: {e}"))));
-
-    Box::pin(futures::stream::unfold(
-        (
-            Box::pin(mapped) as Pin<Box<dyn Stream<Item = Result<bytes::Bytes, KovaError>> + Send>>,
-            String::new(),
-            VecDeque::<StreamEvent>::new(),
-        ),
-        |(mut stream, mut buffer, mut pending)| async move {
-            // Drain buffered events before asking for more bytes.
-            if let Some(event) = pending.pop_front() {
-                return Some((Ok(event), (stream, buffer, pending)));
-            }
-
-            loop {
-                if let Some(nl) = buffer.find('\n') {
-                    let line = buffer[..nl].trim().to_string();
-                    buffer = buffer[nl + 1..].to_string();
-
-                    if line.is_empty() {
-                        continue;
-                    }
-
-                    match serde_json::from_str::<OllamaResponse>(&line) {
-                        Ok(resp) => {
-                            let mut events: VecDeque<_> = format_stream_chunk(resp).into();
-                            if let Some(first) = events.pop_front() {
-                                return Some((Ok(first), (stream, buffer, events)));
-                            }
-                            // Chunk produced no events (e.g. empty content delta); keep going.
-                            continue;
-                        }
-                        Err(e) => {
-                            let err = KovaError::Provider {
-                                message: format!("Failed to parse streaming chunk: {e}"),
-                                status_code: None,
-                            };
-                            return Some((Err(err), (stream, buffer, pending)));
-                        }
-                    }
-                }
-
-                // Buffer has no complete line yet; fetch more bytes.
-                match stream.next().await {
-                    Some(Ok(bytes)) => {
-                        buffer.push_str(&String::from_utf8_lossy(&bytes));
-                    }
-                    Some(Err(e)) => return Some((Err(e), (stream, buffer, pending))),
-                    None => {
-                        // EOF — try to parse any trailing content without a trailing newline.
-                        let remaining = buffer.trim().to_string();
-                        if !remaining.is_empty() {
-                            buffer.clear();
-                            if let Ok(resp) = serde_json::from_str::<OllamaResponse>(&remaining) {
-                                let mut events: VecDeque<_> = format_stream_chunk(resp).into();
-                                if let Some(first) = events.pop_front() {
-                                    return Some((Ok(first), (stream, buffer, events)));
-                                }
-                            }
-                        }
-                        return None;
-                    }
-                }
-            }
-        },
-    ))
+    line_stream_to_events(byte_stream, |line| {
+        let line = line.trim();
+        if line.is_empty() {
+            return LineOutcome::Events(Vec::new());
+        }
+        match serde_json::from_str::<OllamaResponse>(line) {
+            Ok(resp) => LineOutcome::Events(format_stream_chunk(resp)),
+            Err(e) => LineOutcome::Fail(KovaError::Provider {
+                message: format!("Failed to parse streaming chunk: {e}"),
+                status_code: None,
+            }),
+        }
+    })
 }
 
 // ── Model list ─────────────────────────────────────────────────────
@@ -428,6 +382,7 @@ mod tests {
             model: Some("llama3.2".to_string()),
             max_tokens: None,
             temperature: None,
+            ..Default::default()
         }
     }
 
@@ -567,6 +522,7 @@ mod tests {
             model: Some("llama3.2".to_string()),
             max_tokens: Some(512),
             temperature: Some(0.7),
+            ..Default::default()
         };
         let req = format_request(&[user_msg("Hi")], &[], &config, &provider_config(), false);
         let opts = req.options.unwrap();

@@ -132,6 +132,7 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
                 name: None,
                 input_delta: Some(input),
                 provider_metadata: None,
+                index: Some(idx),
             };
             (event, expected)
         }),
@@ -148,6 +149,7 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
                 name: Some(name),
                 input_delta: None,
                 provider_metadata: None,
+                index: Some(idx),
             };
             (event, expected)
         }),
@@ -243,7 +245,7 @@ proptest! {
         max_tokens in prop::option::of(1u32..10000u32),
         temperature in prop::option::of(0.0f32..2.0f32),
     ) {
-        let config = InferenceConfig { model: None, max_tokens, temperature };
+        let config = InferenceConfig { model: None, max_tokens, temperature, ..Default::default() };
         let msg = ConversationMessage {
             role: Role::User,
             content: vec![ContentBlock::Text { text: "hi".to_string() }],
@@ -551,6 +553,7 @@ fn test_format_stream_event_tool_use_start() {
             name: Some("search".to_string()),
             input_delta: None,
             provider_metadata: None,
+            index: Some(1),
         })
     );
 }
@@ -570,6 +573,7 @@ fn test_format_stream_event_tool_use_input_delta() {
             name: None,
             input_delta: Some("{\"query\":\"rust\"}".to_string()),
             provider_metadata: None,
+            index: Some(1),
         })
     );
 }

@@ -30,6 +30,7 @@ fn arb_stream_event() -> impl Strategy<Value = StreamEvent> {
                 name,
                 input_delta,
                 provider_metadata: None,
+                index: None,
             }),
         arb_stop_reason().prop_map(|stop_reason| StreamEvent::StopEvent { stop_reason }),
         "[a-zA-Z0-9 ]{0,50}".prop_map(|message| StreamEvent::Error { message }),

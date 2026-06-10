@@ -394,12 +394,12 @@ proptest! {
         // Histogram lengths must match
         prop_assert_eq!(
             mc.llm_latency_histogram().len(),
-            n_llm,
+            n_llm as u64,
             "LLM latency histogram length mismatch"
         );
         prop_assert_eq!(
             mc.tool_duration_histogram().len(),
-            m_tools,
+            m_tools as u64,
             "Tool duration histogram length mismatch"
         );
     }
@@ -675,7 +675,7 @@ proptest! {
         prop_assert_eq!(mc.tool_invocation_count(), 1);
         prop_assert_eq!(mc.tool_duration_histogram().len(), 1);
 
-        let recorded_duration = mc.tool_duration_histogram()[0];
+        let recorded_duration = mc.tool_duration_histogram().sum_ms;
         prop_assert!(
             (recorded_duration - duration).abs() < f64::EPSILON,
             "Duration should be recorded exactly"
@@ -711,7 +711,7 @@ proptest! {
         prop_assert_eq!(mc.total_tokens(), input_tokens + output_tokens);
         prop_assert_eq!(mc.llm_latency_histogram().len(), 1);
 
-        let recorded = mc.llm_latency_histogram()[0];
+        let recorded = mc.llm_latency_histogram().sum_ms;
         prop_assert!(
             (recorded - latency).abs() < f64::EPSILON,
             "Latency should be recorded exactly"

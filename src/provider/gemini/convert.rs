@@ -9,7 +9,7 @@ fn generate_tool_id() -> String {
     format!("tooluse_{n:016x}")
 }
 
-use futures::{Stream, StreamExt};
+use futures::Stream;
 
 use super::types::{
     GeminiCandidate, GeminiContent, GeminiFunctionCall, GeminiFunctionDeclaration,
@@ -21,6 +21,7 @@ use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
     StreamEvent, ToolDefinition, UsageStats,
 };
+use crate::streaming::line_stream::{LineOutcome, line_stream_to_events};
 use crate::streaming::sse::{SseLine, parse_sse_data, parse_sse_line};
 
 // ── Tool-ID → name lookup ──────────────────────────────────────────
@@ -222,17 +223,22 @@ pub(crate) fn format_request(
         // budget == 0 disables thinking; any other value means we want thoughts visible.
         include_thoughts: if budget != 0 { Some(true) } else { None },
     });
-    let generation_config =
-        if config.max_tokens.is_some() || config.temperature.is_some() || thinking_config.is_some()
-        {
-            Some(GeminiGenerationConfig {
-                max_output_tokens: config.max_tokens,
-                temperature: config.temperature,
-                thinking_config,
-            })
-        } else {
-            None
-        };
+    let generation_config = if config.max_tokens.is_some()
+        || config.temperature.is_some()
+        || config.top_p.is_some()
+        || config.stop_sequences.is_some()
+        || thinking_config.is_some()
+    {
+        Some(GeminiGenerationConfig {
+            max_output_tokens: config.max_tokens,
+            temperature: config.temperature,
+            top_p: config.top_p,
+            stop_sequences: config.stop_sequences.clone(),
+            thinking_config,
+        })
+    } else {
+        None
+    };
 
     GeminiRequest {
         contents,
@@ -395,6 +401,8 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
                     name: Some(fc.name),
                     input_delta,
                     provider_metadata,
+                    // Gemini sends each function call complete in one chunk.
+                    index: None,
                 });
             }
         }
@@ -413,50 +421,14 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
 pub(crate) fn sse_byte_stream_to_events(
     byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
 ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>> {
-    let mapped = byte_stream
-        .map(|chunk| chunk.map_err(|e| KovaError::Stream(format!("Connection error: {e}"))));
-
-    Box::pin(futures::stream::unfold(
-        (
-            Box::pin(mapped) as Pin<Box<dyn Stream<Item = Result<bytes::Bytes, KovaError>> + Send>>,
-            String::new(),
-            std::collections::VecDeque::<StreamEvent>::new(),
-        ),
-        |(mut stream, mut buffer, mut pending)| async move {
-            if let Some(event) = pending.pop_front() {
-                return Some((Ok(event), (stream, buffer, pending)));
-            }
-
-            loop {
-                if let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer[..newline_pos].to_string();
-                    buffer = buffer[newline_pos + 1..].to_string();
-
-                    match parse_sse_line(&line) {
-                        SseLine::Done => return None,
-                        SseLine::Data(data) => match parse_sse_data::<GeminiResponse>(&data) {
-                            Ok(chunk) => {
-                                let mut events: std::collections::VecDeque<_> =
-                                    format_stream_events(chunk).into();
-                                if let Some(first) = events.pop_front() {
-                                    return Some((Ok(first), (stream, buffer, events)));
-                                }
-                                continue;
-                            }
-                            Err(e) => return Some((Err(e), (stream, buffer, pending))),
-                        },
-                        SseLine::Empty | SseLine::Comment => continue,
-                    }
-                }
-
-                match stream.next().await {
-                    Some(Ok(bytes)) => buffer.push_str(&String::from_utf8_lossy(&bytes)),
-                    Some(Err(e)) => return Some((Err(e), (stream, buffer, pending))),
-                    None => return None,
-                }
-            }
+    line_stream_to_events(byte_stream, |line| match parse_sse_line(line) {
+        SseLine::Done => LineOutcome::Done,
+        SseLine::Data(data) => match parse_sse_data::<GeminiResponse>(&data) {
+            Ok(chunk) => LineOutcome::Events(format_stream_events(chunk)),
+            Err(e) => LineOutcome::Fail(e),
         },
-    ))
+        SseLine::Empty | SseLine::Comment => LineOutcome::Events(Vec::new()),
+    })
 }
 
 #[cfg(test)]
@@ -497,6 +469,7 @@ mod tests {
             model: Some("gemini-2.0-flash".to_string()),
             max_tokens: None,
             temperature: None,
+            ..Default::default()
         }
     }
 
@@ -615,6 +588,7 @@ mod tests {
             model: Some("gemini-2.0-flash".to_string()),
             max_tokens: Some(512),
             temperature: Some(0.5),
+            ..Default::default()
         };
         let req = format_request(&[user_msg("Hi")], &[], &config, None);
         let gc = req.generation_config.unwrap();
