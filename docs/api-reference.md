@@ -6,14 +6,16 @@
 AgentBuilder::new()
     .provider(Arc<dyn LlmProvider>)               // required
     .system_prompt(impl Into<String>)             // optional
-    .inference_config(InferenceConfig)            // optional (max_tokens, temperature, model)
+    .inference_config(InferenceConfig)            // optional (model, max_tokens, temperature, top_p, stop_sequences)
     .tool(Arc<dyn Tool>)                          // optional, repeatable
-    .tool_registry(ToolRegistry)                  // optional (mutually exclusive with .tool())
+    .tool_registry(ToolRegistry)                  // optional (composes with .tool())
     .memory(Arc<dyn MemoryStore>)                // optional (default: InMemoryStore unlimited)
     .streaming_handler(Arc<dyn StreamingHandler>) // optional
     .mcp_client(Arc<McpClient>, &str).await?      // optional, async
     .max_iterations(usize)                        // optional (default: 10)
     .max_concurrent_tools(usize)                  // optional (default: 10)
+    .retry_config(RetryConfig)                    // optional (default: 2 retries, exp backoff)
+    .metrics(Arc<MetricsCollector>)               // optional
     .with_approval_handler(Arc<dyn ToolApprovalHandler>) // optional
     .with_lifecycle_hook(Arc<dyn ToolLifecycleHook>)     // optional
     .build()?
@@ -24,31 +26,72 @@ AgentBuilder::new()
 | `provider` | yes | — | |
 | `system_prompt` | no | `None` | Prepended to every conversation |
 | `inference_config` | no | all-`None` | Sets `max_tokens`, `temperature`, `model` for every call |
-| `tool` | no | — | Repeatable; mutually exclusive with `tool_registry` |
-| `tool_registry` | no | empty | Mutually exclusive with `tool` |
+| `tool` | no | — | Repeatable; merged into `tool_registry` on build |
+| `tool_registry` | no | empty | Composes with `tool` |
 | `memory` | no | `InMemoryStore` (unbounded) | |
 | `streaming_handler` | no | `None` | Used by `chat_stream` only |
 | `mcp_client` | no | — | Async; discovers tools at build time |
 | `max_iterations` | no | `10` | Max tool-call loop iterations |
 | `max_concurrent_tools` | no | `10` | Semaphore cap for parallel tool calls |
+| `retry_config` | no | 2 retries | Exponential backoff on transient errors; `RetryConfig::disabled()` to turn off |
+| `metrics` | no | `None` | Agent records LLM latency/tokens/errors + tool durations |
 | `with_approval_handler` | no | `None` | Gates every tool execution; called before `execute` |
 | `with_lifecycle_hook` | no | `None` | Observes tool start/end; skipped for denied calls |
 | `build()` | — | — | Returns `Result<Agent, KovaError>` |
 
 ## Agent
 
+### Stateless API (core)
+
+```rust
+// One agentic turn over caller-owned history. No memory-store involvement.
+agent.run(messages: &[ConversationMessage]) -> Result<AgentResponse, KovaError>
+
+// Same, with per-call InferenceConfig overrides (unset fields fall back to agent defaults).
+agent.run_with_config(messages, overrides: InferenceConfig) -> Result<AgentResponse, KovaError>
+
+// Pull-based streaming: TextDelta / ThinkingDelta / ToolCallStarted /
+// ToolCallFinished / TurnCompleted { response }.
+agent.run_stream(messages) -> impl Stream<Item = Result<AgentEvent, KovaError>>
+```
+
+```rust
+pub struct AgentResponse {
+    pub text: String,                          // final assistant text
+    pub new_messages: Vec<ConversationMessage>, // everything the turn produced — persist this
+    pub stop_reason: StopReason,
+    pub usage: UsageStats,                     // summed across all provider calls in the turn
+    pub llm_calls: u64,
+    pub thinking: Option<String>,
+}
+```
+
+Typical stateless usage:
+
+```rust
+let mut history = vec![/* user message */];
+let response = agent.run(&history).await?;
+history.extend(response.new_messages);
+```
+
+### Session API (memory-backed convenience)
+
 ```rust
 // Blocking response — waits for full LLM output
 agent.chat(conversation_id: &str, user_message: &str) -> Result<String, KovaError>
+
+// Like chat, but returns the full AgentResponse
+agent.chat_response(conversation_id: &str, user_message: &str) -> Result<AgentResponse, KovaError>
 
 // Streaming response — delivers chunks to StreamingHandler, returns full text
 agent.chat_stream(conversation_id: &str, user_message: &str) -> Result<String, KovaError>
 
 // Input tokens reported by the provider for the most recently completed turn.
-// Returns 0 until the first turn completes or if the provider does not report usage.
-// Updated atomically after every turn; safe to call from any thread concurrently.
 agent.last_turn_input_tokens() -> u32
 ```
+
+Session writes are transactional per turn: the user message and produced messages are
+persisted only after the turn succeeds, so a failed turn never corrupts the conversation.
 
 ## Providers
 

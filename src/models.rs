@@ -14,11 +14,11 @@ pub enum Role {
 // ── Content Blocks ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text {
-        text: String,
-    },
+    #[serde(alias = "Text")]
+    Text { text: String },
+    #[serde(alias = "ToolUse")]
     ToolUse {
         id: String,
         name: String,
@@ -28,6 +28,7 @@ pub enum ContentBlock {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         provider_metadata: Option<serde_json::Value>,
     },
+    #[serde(alias = "ToolResult")]
     ToolResult {
         tool_use_id: String,
         content: String,
@@ -92,6 +93,9 @@ pub struct InferenceConfig {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
+    pub top_p: Option<f32>,
+    /// Sequences that cause the model to stop generating.
+    pub stop_sequences: Option<Vec<String>>,
 }
 
 // ── Tool Definition (canonical) ────────────────────────────────────
@@ -115,6 +119,12 @@ pub enum StreamEvent {
         name: Option<String>,
         input_delta: Option<String>,
         provider_metadata: Option<serde_json::Value>,
+        /// Provider-assigned position of this tool call in the response
+        /// (OpenAI `index`, Bedrock `contentBlockIndex`). Deltas for the same
+        /// call share an index; it is the only reliable correlation key when
+        /// providers omit or repeat `id` across delta chunks.
+        #[serde(default)]
+        index: Option<u32>,
     },
     StopEvent {
         stop_reason: StopReason,

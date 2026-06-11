@@ -74,12 +74,12 @@ proptest! {
                     tool_description: desc.clone(),
                     schema: schema.clone(),
                 });
-                registry.register(tool).await;
+                registry.register(tool);
                 expected.push((name.clone(), desc.clone(), schema.clone()));
             }
 
             for (name, desc, schema) in &expected {
-                let found = registry.get(name).await;
+                let found = registry.get(name);
                 prop_assert!(found.is_some(), "Tool '{}' not found after registration", name);
                 let found = found.unwrap();
                 prop_assert_eq!(found.name(), name.as_str());
@@ -87,9 +87,9 @@ proptest! {
                 prop_assert_eq!(found.parameters_schema(), schema.clone());
             }
 
-            let defs = registry.tool_definitions().await;
+            let defs = registry.tool_definitions();
             prop_assert_eq!(defs.len(), expected.len());
-            for def in &defs {
+            for def in defs.iter() {
                 let matching = expected.iter().find(|(n, _, _)| n == &def.name);
                 prop_assert!(matching.is_some(), "Unexpected tool definition: {}", def.name);
                 let (_, desc, schema) = matching.unwrap();

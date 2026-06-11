@@ -3,6 +3,7 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
+use tracing::Instrument;
 
 use super::config::GeminiProviderConfig;
 use super::convert::{format_request, format_response, sse_byte_stream_to_events};
@@ -48,6 +49,8 @@ impl GeminiProvider {
                 .or_else(|| Some(self.config.model.clone())),
             max_tokens: request_config.max_tokens,
             temperature: request_config.temperature,
+            top_p: request_config.top_p,
+            stop_sequences: request_config.stop_sequences.clone(),
         }
     }
 }
@@ -70,57 +73,60 @@ impl LlmProvider for GeminiProvider {
             llm.output_tokens = tracing::field::Empty,
             llm.stop_reason = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let merged = self.merge_config(config);
+            let gemini_request =
+                format_request(messages, tools, &merged, self.config.thinking_budget);
+            let url = self.config.generate_content_url(&model_name);
+            let req = self.apply_auth(self.client.post(&url).json(&gemini_request));
 
-        let merged = self.merge_config(config);
-        let gemini_request = format_request(messages, tools, &merged, self.config.thinking_budget);
-        let url = self.config.generate_content_url(&model_name);
-        let req = self.apply_auth(self.client.post(&url).json(&gemini_request));
+            let start = std::time::Instant::now();
+            let response = req.send().await.map_err(|e| {
+                let err = map_request_error(e, self.config.timeout);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "LLM request failed");
+                err
+            })?;
 
-        let start = std::time::Instant::now();
-        let response = req.send().await.map_err(|e| {
-            let err = map_request_error(e, self.config.timeout);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "LLM request failed");
-            err
-        })?;
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = KovaError::Provider {
+                    message: body,
+                    status_code: Some(status.as_u16()),
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "LLM provider returned error");
+                return Err(err);
+            }
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = KovaError::Provider {
-                message: body,
-                status_code: Some(status.as_u16()),
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "LLM provider returned error");
-            return Err(err);
+            let gemini_response: GeminiResponse = response.json().await.map_err(|e| {
+                let err = KovaError::Provider {
+                    message: format!("Failed to deserialize response: {e}"),
+                    status_code: None,
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "Failed to deserialize LLM response");
+                err
+            })?;
+
+            let latency_ms = start.elapsed().as_millis() as u64;
+            if let Some(ref usage) = gemini_response.usage_metadata {
+                tracing::Span::current().record("llm.input_tokens", usage.prompt_token_count);
+                tracing::Span::current().record("llm.output_tokens", usage.candidates_token_count);
+            }
+            let finish_reason = gemini_response
+                .candidates
+                .first()
+                .and_then(|c| c.finish_reason.as_deref())
+                .unwrap_or("STOP");
+            tracing::Span::current().record("llm.stop_reason", finish_reason);
+            tracing::info!(latency_ms, "LLM chat completion succeeded");
+
+            format_response(gemini_response)
         }
-
-        let gemini_response: GeminiResponse = response.json().await.map_err(|e| {
-            let err = KovaError::Provider {
-                message: format!("Failed to deserialize response: {e}"),
-                status_code: None,
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "Failed to deserialize LLM response");
-            err
-        })?;
-
-        let latency_ms = start.elapsed().as_millis() as u64;
-        if let Some(ref usage) = gemini_response.usage_metadata {
-            tracing::Span::current().record("llm.input_tokens", usage.prompt_token_count);
-            tracing::Span::current().record("llm.output_tokens", usage.candidates_token_count);
-        }
-        let finish_reason = gemini_response
-            .candidates
-            .first()
-            .and_then(|c| c.finish_reason.as_deref())
-            .unwrap_or("STOP");
-        tracing::Span::current().record("llm.stop_reason", finish_reason);
-        tracing::info!(latency_ms, "LLM chat completion succeeded");
-
-        format_response(gemini_response)
+        .instrument(span)
+        .await
     }
 
     async fn chat_completion_stream(
@@ -136,33 +142,36 @@ impl LlmProvider for GeminiProvider {
             model = %model_name,
             otel.status_code = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let merged = self.merge_config(config);
+            let gemini_request =
+                format_request(messages, tools, &merged, self.config.thinking_budget);
+            let url = self.config.stream_generate_content_url(&model_name);
+            let req = self.apply_auth(self.client.post(&url).json(&gemini_request));
 
-        let merged = self.merge_config(config);
-        let gemini_request = format_request(messages, tools, &merged, self.config.thinking_budget);
-        let url = self.config.stream_generate_content_url(&model_name);
-        let req = self.apply_auth(self.client.post(&url).json(&gemini_request));
+            let response = req.send().await.map_err(|e| {
+                let err = map_request_error(e, self.config.timeout);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "LLM stream request failed");
+                err
+            })?;
 
-        let response = req.send().await.map_err(|e| {
-            let err = map_request_error(e, self.config.timeout);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "LLM stream request failed");
-            err
-        })?;
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = KovaError::Provider {
+                    message: body,
+                    status_code: Some(status.as_u16()),
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "LLM stream provider returned error");
+                return Err(err);
+            }
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = KovaError::Provider {
-                message: body,
-                status_code: Some(status.as_u16()),
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "LLM stream provider returned error");
-            return Err(err);
+            Ok(sse_byte_stream_to_events(response.bytes_stream()))
         }
-
-        Ok(Box::pin(sse_byte_stream_to_events(response.bytes_stream())))
+        .instrument(span)
+        .await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
@@ -171,57 +180,59 @@ impl LlmProvider for GeminiProvider {
             provider = "gemini",
             otel.status_code = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let url = self.config.models_url();
+            let req = self.apply_auth(self.client.get(&url));
 
-        let url = self.config.models_url();
-        let req = self.apply_auth(self.client.get(&url));
+            let response = req.send().await.map_err(|e| {
+                let err = map_request_error(e, self.config.timeout);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "List models request failed");
+                err
+            })?;
 
-        let response = req.send().await.map_err(|e| {
-            let err = map_request_error(e, self.config.timeout);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "List models request failed");
-            err
-        })?;
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = KovaError::Provider {
+                    message: body,
+                    status_code: Some(status.as_u16()),
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "List models provider returned error");
+                return Err(err);
+            }
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = KovaError::Provider {
-                message: body,
-                status_code: Some(status.as_u16()),
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "List models provider returned error");
-            return Err(err);
+            let model_list: GeminiModelListResponse = response.json().await.map_err(|e| {
+                let err = KovaError::Provider {
+                    message: format!("Failed to deserialize model list: {e}"),
+                    status_code: None,
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                err
+            })?;
+
+            Ok(model_list
+                .models
+                .into_iter()
+                .map(|m| {
+                    // API returns names like "models/gemini-2.0-flash"; strip prefix.
+                    let id = m
+                        .name
+                        .strip_prefix("models/")
+                        .unwrap_or(&m.name)
+                        .to_string();
+                    ModelInfo {
+                        id,
+                        object: "model".to_string(),
+                        created: 0,
+                        owned_by: "google".to_string(),
+                    }
+                })
+                .collect())
         }
-
-        let model_list: GeminiModelListResponse = response.json().await.map_err(|e| {
-            let err = KovaError::Provider {
-                message: format!("Failed to deserialize model list: {e}"),
-                status_code: None,
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            err
-        })?;
-
-        Ok(model_list
-            .models
-            .into_iter()
-            .map(|m| {
-                // API returns names like "models/gemini-2.0-flash"; strip prefix.
-                let id = m
-                    .name
-                    .strip_prefix("models/")
-                    .unwrap_or(&m.name)
-                    .to_string();
-                ModelInfo {
-                    id,
-                    object: "model".to_string(),
-                    created: 0,
-                    owned_by: "google".to_string(),
-                }
-            })
-            .collect())
+        .instrument(span)
+        .await
     }
 }
 
@@ -247,6 +258,7 @@ mod tests {
             model: Some("gemini-2.0-flash".to_string()),
             max_tokens: Some(100),
             temperature: Some(0.7),
+            ..Default::default()
         }
     }
 

@@ -1,3 +1,6 @@
+#[cfg(any(feature = "openai", feature = "gemini", feature = "ollama"))]
+pub(crate) mod line_stream;
+#[cfg(any(feature = "openai", feature = "gemini"))]
 pub(crate) mod sse;
 
 use async_trait::async_trait;

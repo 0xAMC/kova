@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use serde_json;
 
 use super::types::{
@@ -12,6 +12,7 @@ use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
     StreamEvent, ToolDefinition, UsageStats,
 };
+use crate::streaming::line_stream::{LineOutcome, line_stream_to_events};
 use crate::streaming::sse::{SseLine, parse_sse_data, parse_sse_line};
 
 // ── Request formatting ─────────────────────────────────────────────
@@ -118,6 +119,8 @@ pub(crate) fn format_request(
         tools: oai_tools,
         max_tokens: config.max_tokens,
         temperature: config.temperature,
+        top_p: config.top_p,
+        stop: config.stop_sequences.clone(),
         stream: None,
         stream_options: None,
         reasoning_effort: None,
@@ -226,6 +229,7 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
                     name: tc_delta.function.as_ref().and_then(|f| f.name.clone()),
                     input_delta: tc_delta.function.as_ref().and_then(|f| f.arguments.clone()),
                     provider_metadata: None,
+                    index: Some(tc_delta.index),
                 });
             }
         }
@@ -238,56 +242,20 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
 
 /// Convert a raw byte stream into a stream of [`StreamEvent`]s.
 ///
-/// Buffers incoming bytes, splits on newlines, parses each SSE line,
-/// deserializes `data:` payloads as `OaiResponseChunk`, and maps them
-/// to `StreamEvent`. Terminates on `[DONE]`.
+/// Parses each SSE line, deserializes `data:` payloads as
+/// `OaiResponseChunk`, and maps them to `StreamEvent`. Terminates on
+/// `[DONE]`.
 pub(crate) fn sse_byte_stream_to_events(
     byte_stream: impl Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send + 'static,
 ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>> {
-    let mapped = byte_stream
-        .map(|chunk| chunk.map_err(|e| KovaError::Stream(format!("Connection error: {e}"))));
-
-    Box::pin(futures::stream::unfold(
-        (
-            Box::pin(mapped) as Pin<Box<dyn Stream<Item = Result<bytes::Bytes, KovaError>> + Send>>,
-            String::new(),
-            std::collections::VecDeque::<StreamEvent>::new(),
-        ),
-        |(mut stream, mut buffer, mut pending)| async move {
-            if let Some(event) = pending.pop_front() {
-                return Some((Ok(event), (stream, buffer, pending)));
-            }
-
-            loop {
-                if let Some(newline_pos) = buffer.find('\n') {
-                    let line = buffer[..newline_pos].to_string();
-                    buffer = buffer[newline_pos + 1..].to_string();
-
-                    match parse_sse_line(&line) {
-                        SseLine::Done => return None,
-                        SseLine::Data(data) => match parse_sse_data::<OaiResponseChunk>(&data) {
-                            Ok(chunk) => {
-                                let mut events: std::collections::VecDeque<_> =
-                                    format_stream_event(chunk).into();
-                                if let Some(first) = events.pop_front() {
-                                    return Some((Ok(first), (stream, buffer, events)));
-                                }
-                                continue;
-                            }
-                            Err(e) => return Some((Err(e), (stream, buffer, pending))),
-                        },
-                        SseLine::Empty | SseLine::Comment => continue,
-                    }
-                }
-
-                match stream.next().await {
-                    Some(Ok(bytes)) => buffer.push_str(&String::from_utf8_lossy(&bytes)),
-                    Some(Err(e)) => return Some((Err(e), (stream, buffer, pending))),
-                    None => return None,
-                }
-            }
+    line_stream_to_events(byte_stream, |line| match parse_sse_line(line) {
+        SseLine::Done => LineOutcome::Done,
+        SseLine::Data(data) => match parse_sse_data::<OaiResponseChunk>(&data) {
+            Ok(chunk) => LineOutcome::Events(format_stream_event(chunk)),
+            Err(e) => LineOutcome::Fail(e),
         },
-    ))
+        SseLine::Empty | SseLine::Comment => LineOutcome::Events(Vec::new()),
+    })
 }
 
 #[cfg(test)]

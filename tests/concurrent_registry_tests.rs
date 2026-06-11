@@ -70,9 +70,7 @@ proptest! {
 
             // Register all tools.
             for name in &tool_names {
-                registry
-                    .register(make_tool(name, &format!("desc for {}", name)))
-                    .await;
+                registry.register(make_tool(name, &format!("desc for {}", name)));
             }
 
             let registry = Arc::new(registry);
@@ -85,12 +83,12 @@ proptest! {
                 handles.push(tokio::spawn(async move {
                     let mut results = Vec::new();
                     for name in &names {
-                        let tool = reg.get(name).await;
+                        let tool = reg.get(name);
                         results.push((name.clone(), tool));
                     }
                     // Also call list() and tool_definitions() concurrently.
-                    let listed = reg.list().await;
-                    let defs = reg.tool_definitions().await;
+                    let listed = reg.list();
+                    let defs = reg.tool_definitions();
                     (results, listed, defs)
                 }));
             }

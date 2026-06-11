@@ -1,69 +1,98 @@
 use std::collections::HashMap;
-use std::sync::Arc;
-
-use tokio::sync::RwLock;
+use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::models::ToolDefinition;
 
 use super::Tool;
 
+struct RegistryInner {
+    tools: HashMap<String, Arc<dyn Tool>>,
+    /// Lazily-built definitions for all registered tools. Building one
+    /// requires cloning every tool's JSON schema, and the agent needs the
+    /// list on every LLM call, so it is cached until the next `register`.
+    cached_definitions: Option<Arc<Vec<ToolDefinition>>>,
+}
+
 /// Thread-safe registry for storing and resolving tools by name.
+///
+/// Lookups are synchronous: the internal lock is only held for map access
+/// and never across an `.await` point.
 pub struct ToolRegistry {
-    tools: Arc<RwLock<HashMap<String, Arc<dyn Tool>>>>,
+    inner: Arc<RwLock<RegistryInner>>,
 }
 
 impl ToolRegistry {
     /// Create a new empty `ToolRegistry`.
     pub fn new() -> Self {
-        Self {
-            tools: Arc::new(RwLock::new(HashMap::new())),
-        }
+        Self::from_tools(Vec::new())
     }
 
     /// Create a `ToolRegistry` pre-populated with the given tools.
-    ///
-    /// This is a synchronous constructor that avoids the need for async
-    /// `register` calls — useful in `AgentBuilder::build()`.
     pub fn from_tools(tools: Vec<Arc<dyn Tool>>) -> Self {
         let mut map = HashMap::new();
         for tool in tools {
             map.insert(tool.name().to_string(), tool);
         }
         Self {
-            tools: Arc::new(RwLock::new(map)),
+            inner: Arc::new(RwLock::new(RegistryInner {
+                tools: map,
+                cached_definitions: None,
+            })),
         }
     }
 
+    fn read(&self) -> RwLockReadGuard<'_, RegistryInner> {
+        self.inner.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, RegistryInner> {
+        self.inner.write().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Register a tool. Overwrites any existing tool with the same name.
-    pub async fn register(&self, tool: Arc<dyn Tool>) {
+    pub fn register(&self, tool: Arc<dyn Tool>) {
         let name = tool.name().to_string();
-        let mut tools = self.tools.write().await;
-        tools.insert(name, tool);
+        let mut inner = self.write();
+        inner.tools.insert(name, tool);
+        inner.cached_definitions = None;
     }
 
     /// Look up a tool by name.
-    pub async fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        let tools = self.tools.read().await;
-        tools.get(name).cloned()
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.read().tools.get(name).cloned()
     }
 
     /// List all registered tool names.
-    pub async fn list(&self) -> Vec<String> {
-        let tools = self.tools.read().await;
-        tools.keys().cloned().collect()
+    pub fn list(&self) -> Vec<String> {
+        self.read().tools.keys().cloned().collect()
     }
 
     /// Return `ToolDefinition` entries for all registered tools.
-    pub async fn tool_definitions(&self) -> Vec<ToolDefinition> {
-        let tools = self.tools.read().await;
-        tools
-            .values()
-            .map(|tool| ToolDefinition {
-                name: tool.name().to_string(),
-                description: tool.description().to_string(),
-                parameters: tool.parameters_schema(),
-            })
-            .collect()
+    ///
+    /// The list is built once and cached; subsequent calls are cheap until
+    /// a new tool is registered.
+    pub fn tool_definitions(&self) -> Arc<Vec<ToolDefinition>> {
+        if let Some(defs) = &self.read().cached_definitions {
+            return Arc::clone(defs);
+        }
+
+        let mut inner = self.write();
+        if let Some(defs) = &inner.cached_definitions {
+            return Arc::clone(defs);
+        }
+        let defs = Arc::new(
+            inner
+                .tools
+                .values()
+                .map(|tool| ToolDefinition {
+                    name: tool.name().to_string(),
+                    description: tool.description().to_string(),
+                    parameters: tool.parameters_schema(),
+                })
+                .collect::<Vec<_>>(),
+        );
+        inner.cached_definitions = Some(Arc::clone(&defs));
+        defs
     }
 }
 
@@ -76,7 +105,7 @@ impl Default for ToolRegistry {
 impl Clone for ToolRegistry {
     fn clone(&self) -> Self {
         Self {
-            tools: Arc::clone(&self.tools),
+            inner: Arc::clone(&self.inner),
         }
     }
 }
@@ -123,103 +152,113 @@ mod tests {
         })
     }
 
-    #[tokio::test]
-    async fn register_and_get() {
+    #[test]
+    fn register_and_get() {
         let registry = ToolRegistry::new();
-        registry.register(make_tool("calc", "A calculator")).await;
+        registry.register(make_tool("calc", "A calculator"));
 
-        let tool = registry.get("calc").await;
+        let tool = registry.get("calc");
         assert!(tool.is_some());
         let tool = tool.unwrap();
         assert_eq!(tool.name(), "calc");
         assert_eq!(tool.description(), "A calculator");
     }
 
-    #[tokio::test]
-    async fn get_missing_returns_none() {
+    #[test]
+    fn get_missing_returns_none() {
         let registry = ToolRegistry::new();
-        assert!(registry.get("nonexistent").await.is_none());
+        assert!(registry.get("nonexistent").is_none());
     }
 
-    #[tokio::test]
-    async fn list_returns_all_names() {
+    #[test]
+    fn list_returns_all_names() {
         let registry = ToolRegistry::new();
-        registry.register(make_tool("a", "tool a")).await;
-        registry.register(make_tool("b", "tool b")).await;
+        registry.register(make_tool("a", "tool a"));
+        registry.register(make_tool("b", "tool b"));
 
-        let mut names = registry.list().await;
+        let mut names = registry.list();
         names.sort();
         assert_eq!(names, vec!["a", "b"]);
     }
 
-    #[tokio::test]
-    async fn tool_definitions_format() {
+    #[test]
+    fn tool_definitions_format() {
         let registry = ToolRegistry::new();
-        registry
-            .register(make_tool("search", "Search the web"))
-            .await;
+        registry.register(make_tool("search", "Search the web"));
 
-        let defs = registry.tool_definitions().await;
+        let defs = registry.tool_definitions();
         assert_eq!(defs.len(), 1);
         assert_eq!(defs[0].name, "search");
         assert_eq!(defs[0].description, "Search the web");
         assert_eq!(defs[0].parameters, json!({"type": "object"}));
     }
 
-    #[tokio::test]
-    async fn register_overwrites_existing() {
+    #[test]
+    fn tool_definitions_cached_until_register() {
         let registry = ToolRegistry::new();
-        registry.register(make_tool("calc", "old desc")).await;
-        registry.register(make_tool("calc", "new desc")).await;
+        registry.register(make_tool("a", "tool a"));
 
-        let tool = registry.get("calc").await.unwrap();
-        assert_eq!(tool.description(), "new desc");
-        assert_eq!(registry.list().await.len(), 1);
+        let first = registry.tool_definitions();
+        let second = registry.tool_definitions();
+        assert!(Arc::ptr_eq(&first, &second), "definitions are cached");
+
+        registry.register(make_tool("b", "tool b"));
+        let third = registry.tool_definitions();
+        assert!(!Arc::ptr_eq(&first, &third), "register invalidates cache");
+        assert_eq!(third.len(), 2);
     }
 
-    #[tokio::test]
-    async fn clone_shares_state() {
+    #[test]
+    fn register_overwrites_existing() {
+        let registry = ToolRegistry::new();
+        registry.register(make_tool("calc", "old desc"));
+        registry.register(make_tool("calc", "new desc"));
+
+        let tool = registry.get("calc").unwrap();
+        assert_eq!(tool.description(), "new desc");
+        assert_eq!(registry.list().len(), 1);
+    }
+
+    #[test]
+    fn clone_shares_state() {
         let registry = ToolRegistry::new();
         let cloned = registry.clone();
 
-        registry.register(make_tool("shared", "shared tool")).await;
-        assert!(cloned.get("shared").await.is_some());
+        registry.register(make_tool("shared", "shared tool"));
+        assert!(cloned.get("shared").is_some());
     }
 
-    #[tokio::test]
-    async fn from_tools_populates_registry() {
+    #[test]
+    fn from_tools_populates_registry() {
         let tools = vec![
             make_tool("alpha", "tool alpha"),
             make_tool("beta", "tool beta"),
         ];
         let registry = ToolRegistry::from_tools(tools);
 
-        assert!(registry.get("alpha").await.is_some());
-        assert!(registry.get("beta").await.is_some());
-        assert_eq!(
-            registry.get("alpha").await.unwrap().description(),
-            "tool alpha"
-        );
+        assert!(registry.get("alpha").is_some());
+        assert!(registry.get("beta").is_some());
+        assert_eq!(registry.get("alpha").unwrap().description(), "tool alpha");
 
-        let mut names = registry.list().await;
+        let mut names = registry.list();
         names.sort();
         assert_eq!(names, vec!["alpha", "beta"]);
     }
 
-    #[tokio::test]
-    async fn from_tools_empty_vec() {
+    #[test]
+    fn from_tools_empty_vec() {
         let registry = ToolRegistry::from_tools(vec![]);
-        assert!(registry.list().await.is_empty());
+        assert!(registry.list().is_empty());
     }
 
-    #[tokio::test]
-    async fn from_tools_last_wins_on_duplicate() {
+    #[test]
+    fn from_tools_last_wins_on_duplicate() {
         let tools = vec![make_tool("dup", "first"), make_tool("dup", "second")];
         let registry = ToolRegistry::from_tools(tools);
 
-        let tool = registry.get("dup").await.unwrap();
+        let tool = registry.get("dup").unwrap();
         assert_eq!(tool.description(), "second");
-        assert_eq!(registry.list().await.len(), 1);
+        assert_eq!(registry.list().len(), 1);
     }
 
     /// Compile-time assertion that ToolRegistry is Send + Sync.
