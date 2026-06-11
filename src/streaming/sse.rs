@@ -23,8 +23,14 @@ pub(crate) enum SseLine {
 /// - Lines starting with `:` → `SseLine::Comment`
 /// - Empty / whitespace-only lines → `SseLine::Empty`
 /// - Anything else → `SseLine::Empty` (ignored per SSE spec)
+///
+/// Per the SSE spec, at most one leading space is stripped from the value
+/// after `data:`; further whitespace is part of the payload. A trailing
+/// `\r` (CRLF framing) is always stripped.
 pub(crate) fn parse_sse_line(line: &str) -> SseLine {
-    let trimmed = line.trim();
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    // Lenient on leading whitespace before the field name (some proxies indent).
+    let trimmed = line.trim_start();
 
     if trimmed.is_empty() {
         return SseLine::Empty;
@@ -35,8 +41,8 @@ pub(crate) fn parse_sse_line(line: &str) -> SseLine {
     }
 
     if let Some(rest) = trimmed.strip_prefix("data:") {
-        let payload = rest.trim_start();
-        if payload == "[DONE]" {
+        let payload = rest.strip_prefix(' ').unwrap_or(rest);
+        if payload.trim() == "[DONE]" {
             return SseLine::Done;
         }
         return SseLine::Data(payload.to_string());
@@ -83,6 +89,7 @@ mod tests {
                     name,
                     input_delta,
                     provider_metadata: None,
+                    index: None,
                 }),
             arb_stop_reason().prop_map(|stop_reason| StreamEvent::StopEvent { stop_reason }),
             "[a-zA-Z0-9 ]{0,50}".prop_map(|message| StreamEvent::Error { message }),

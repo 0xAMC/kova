@@ -7,8 +7,9 @@ use crate::mcp::tool::McpTool;
 use crate::memory::MemoryStore;
 use crate::memory::in_memory::InMemoryStore;
 use crate::models::InferenceConfig;
-use crate::provider::LlmProvider;
+use crate::provider::{LlmProvider, RetryConfig};
 use crate::streaming::StreamingHandler;
+use crate::telemetry::MetricsCollector;
 use crate::tool::Tool;
 use crate::tool::ToolLifecycleHook;
 use crate::tool::approval::ToolApprovalHandler;
@@ -21,13 +22,12 @@ use super::Agent;
 /// The only required field is the LLM provider — calling `build()` without
 /// one returns `KovaError::Build`.
 ///
-/// Use either `.tool()` **or** `.tool_registry()`, not both — mixing them
-/// returns `KovaError::Build` from `build()`.
+/// `.tool()` and `.tool_registry()` compose: tools registered with `.tool()`
+/// are merged into the provided registry (overwriting same-named entries).
 pub struct AgentBuilder {
     provider: Option<Arc<dyn LlmProvider>>,
     tools: Vec<Arc<dyn Tool>>,
     tool_registry: ToolRegistry,
-    registry_explicitly_set: bool,
     memory: Option<Arc<dyn MemoryStore>>,
     system_prompt: Option<String>,
     max_iterations: usize,
@@ -36,6 +36,8 @@ pub struct AgentBuilder {
     streaming_handler: Option<Arc<dyn StreamingHandler>>,
     approval_handler: Option<Arc<dyn ToolApprovalHandler>>,
     lifecycle_hook: Option<Arc<dyn ToolLifecycleHook>>,
+    metrics: Option<Arc<MetricsCollector>>,
+    retry_config: RetryConfig,
 }
 
 impl AgentBuilder {
@@ -45,7 +47,6 @@ impl AgentBuilder {
             provider: None,
             tools: Vec::new(),
             tool_registry: ToolRegistry::new(),
-            registry_explicitly_set: false,
             memory: None,
             system_prompt: None,
             max_iterations: 10,
@@ -54,6 +55,8 @@ impl AgentBuilder {
             streaming_handler: None,
             approval_handler: None,
             lifecycle_hook: None,
+            metrics: None,
+            retry_config: RetryConfig::default(),
         }
     }
 
@@ -87,16 +90,16 @@ impl AgentBuilder {
         self
     }
 
-    /// Register a single tool. Cannot be combined with `.tool_registry()`.
+    /// Register a single tool.
     pub fn tool(mut self, tool: Arc<dyn Tool>) -> Self {
         self.tools.push(tool);
         self
     }
 
-    /// Set a pre-built tool registry. Cannot be combined with `.tool()`.
+    /// Set a pre-built tool registry. Tools registered via `.tool()` are
+    /// merged into it on `build()`.
     pub fn tool_registry(mut self, registry: ToolRegistry) -> Self {
         self.tool_registry = registry;
-        self.registry_explicitly_set = true;
         self
     }
 
@@ -118,7 +121,7 @@ impl AgentBuilder {
     ///
     /// The discovered MCP tools are wrapped as [`McpTool`] instances and
     /// added to the agent's tool list alongside any `.tool()` registrations.
-    /// Each tool receives a qualified name in the format `@{server_name}/{tool_name}`.
+    /// Each tool receives a qualified name in the format `{server_name}__{tool_name}`.
     pub async fn mcp_client(
         mut self,
         client: Arc<McpClient>,
@@ -145,6 +148,23 @@ impl AgentBuilder {
         self
     }
 
+    /// Set the retry policy for provider calls (default: 2 retries with
+    /// exponential backoff on transient errors). Use
+    /// [`RetryConfig::disabled`] to turn retries off.
+    pub fn retry_config(mut self, config: RetryConfig) -> Self {
+        self.retry_config = config;
+        self
+    }
+
+    /// Register a metrics collector.
+    ///
+    /// When set, the agent records LLM request latency, token usage, errors,
+    /// and tool execution durations into it automatically.
+    pub fn metrics(mut self, collector: Arc<MetricsCollector>) -> Self {
+        self.metrics = Some(collector);
+        self
+    }
+
     /// Set a lifecycle hook to observe tool execution start and end.
     ///
     /// The hook is called around every tool execution regardless of
@@ -160,23 +180,15 @@ impl AgentBuilder {
     /// # Errors
     ///
     /// - `KovaError::Build` if no provider is set.
-    /// - `KovaError::Build` if both `.tool()` and `.tool_registry()` are used.
     pub fn build(self) -> Result<Agent, KovaError> {
         let provider = self
             .provider
             .ok_or_else(|| KovaError::Build("LlmProvider is required".into()))?;
 
-        if self.registry_explicitly_set && !self.tools.is_empty() {
-            return Err(KovaError::Build(
-                "Use either .tool() or .tool_registry(), not both".into(),
-            ));
+        let tool_registry = self.tool_registry;
+        for tool in self.tools {
+            tool_registry.register(tool);
         }
-
-        let tool_registry = if !self.tools.is_empty() {
-            ToolRegistry::from_tools(self.tools)
-        } else {
-            self.tool_registry
-        };
 
         let memory = self
             .memory
@@ -193,6 +205,9 @@ impl AgentBuilder {
             streaming_handler: self.streaming_handler,
             approval_handler: self.approval_handler,
             lifecycle_hook: self.lifecycle_hook,
+            approval_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            metrics: self.metrics,
+            retry_config: self.retry_config,
             last_turn_input_tokens: Arc::new(AtomicU32::new(0)),
         })
     }

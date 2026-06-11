@@ -297,3 +297,138 @@ async fn tool_call_with_empty_registry_sends_not_found() {
     assert_eq!(tool_use_id, "tc-1");
     assert!(content.contains("not found"));
 }
+
+// ── Approval session caching ───────────────────────────────────────
+
+mod approval_caching {
+    use super::*;
+    use async_trait::async_trait;
+    use kova_sdk::{ApprovalDecision, ToolApprovalHandler};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingApprovalHandler {
+        decision: ApprovalDecision,
+        calls: AtomicUsize,
+    }
+
+    impl CountingApprovalHandler {
+        fn new(decision: ApprovalDecision) -> Self {
+            Self {
+                decision,
+                calls: AtomicUsize::new(0),
+            }
+        }
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait]
+    impl ToolApprovalHandler for CountingApprovalHandler {
+        async fn approve(&self, _tool_name: &str, _args: &serde_json::Value) -> ApprovalDecision {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.decision.clone()
+        }
+    }
+
+    fn two_round_agent(
+        provider: Arc<MockLlmProvider>,
+        tool: Arc<MockTool>,
+        handler: Arc<CountingApprovalHandler>,
+    ) -> kova_sdk::agent::Agent {
+        AgentBuilder::new()
+            .provider(provider)
+            .tool(tool)
+            .with_approval_handler(handler)
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn approved_for_session_asks_handler_only_once() {
+        let provider = Arc::new(MockLlmProvider::with_responses(vec![
+            make_tool_call_response(vec![tool_call("tc-1", "greet", "{}")]),
+            make_tool_call_response(vec![tool_call("tc-2", "greet", "{}")]),
+            make_text_response("done"),
+        ]));
+        let tool = Arc::new(MockTool::new("greet", "hi"));
+        let handler = Arc::new(CountingApprovalHandler::new(
+            ApprovalDecision::ApprovedForSession,
+        ));
+
+        let agent = two_round_agent(provider, tool.clone(), handler.clone());
+        let reply = agent.chat("conv-1", "go").await.unwrap();
+
+        assert_eq!(reply, "done");
+        assert_eq!(tool.call_count(), 2, "both invocations execute");
+        assert_eq!(handler.call_count(), 1, "handler consulted only once");
+    }
+
+    #[tokio::test]
+    async fn denied_always_blocks_without_reasking() {
+        let provider = Arc::new(MockLlmProvider::with_responses(vec![
+            make_tool_call_response(vec![tool_call("tc-1", "greet", "{}")]),
+            make_tool_call_response(vec![tool_call("tc-2", "greet", "{}")]),
+            make_text_response("done"),
+        ]));
+        let tool = Arc::new(MockTool::new("greet", "hi"));
+        let handler = Arc::new(CountingApprovalHandler::new(ApprovalDecision::DeniedAlways));
+
+        let agent = two_round_agent(provider, tool.clone(), handler.clone());
+        let reply = agent.chat("conv-1", "go").await.unwrap();
+
+        assert_eq!(reply, "done");
+        assert_eq!(tool.call_count(), 0, "denied tool never executes");
+        assert_eq!(handler.call_count(), 1, "handler consulted only once");
+    }
+
+    #[tokio::test]
+    async fn plain_approved_asks_handler_every_time() {
+        let provider = Arc::new(MockLlmProvider::with_responses(vec![
+            make_tool_call_response(vec![tool_call("tc-1", "greet", "{}")]),
+            make_tool_call_response(vec![tool_call("tc-2", "greet", "{}")]),
+            make_text_response("done"),
+        ]));
+        let tool = Arc::new(MockTool::new("greet", "hi"));
+        let handler = Arc::new(CountingApprovalHandler::new(ApprovalDecision::Approved));
+
+        let agent = two_round_agent(provider, tool.clone(), handler.clone());
+        agent.chat("conv-1", "go").await.unwrap();
+
+        assert_eq!(tool.call_count(), 2);
+        assert_eq!(handler.call_count(), 2);
+    }
+}
+
+// ── Metrics wiring ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn agent_records_metrics_when_collector_registered() {
+    use kova_sdk::telemetry::MetricsCollector;
+
+    let provider = Arc::new(MockLlmProvider::with_responses(vec![
+        make_tool_call_response(vec![tool_call("tc-1", "greet", "{}")]),
+        make_text_response("done"),
+    ]));
+    let tool = Arc::new(MockTool::new("greet", "hi"));
+    let metrics = Arc::new(MetricsCollector::new());
+
+    let agent = AgentBuilder::new()
+        .provider(provider)
+        .tool(tool)
+        .metrics(Arc::clone(&metrics))
+        .build()
+        .unwrap();
+
+    agent.chat("conv-1", "go").await.unwrap();
+
+    assert_eq!(
+        metrics.llm_request_count(),
+        2,
+        "two provider calls recorded"
+    );
+    assert_eq!(metrics.tool_invocation_count(), 1, "one tool call recorded");
+    assert_eq!(metrics.error_count(), 0);
+    assert_eq!(metrics.llm_latency_histogram().len(), 2);
+    assert_eq!(metrics.tool_duration_histogram().len(), 1);
+}

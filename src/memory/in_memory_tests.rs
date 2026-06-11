@@ -228,8 +228,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_system_prompt_truncation_keeps_recent() {
-        // Without a system prompt, truncation just keeps the N most recent
+    async fn no_system_prompt_truncation_starts_at_user_boundary() {
+        // Without a system prompt, truncation keeps the most recent messages,
+        // advancing the cut to the next user message so history never opens
+        // mid-exchange (Bedrock/Anthropic require user-first conversations).
         let store = InMemoryStore::with_max_messages(2);
         store
             .add_message("c1", msg(Role::User, "old"))
@@ -245,7 +247,6 @@ mod tests {
             .unwrap();
 
         let history = store.get_history("c1").await.unwrap();
-        assert_eq!(history.len(), 2);
 
         let texts: Vec<&str> = history
             .iter()
@@ -254,6 +255,101 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(texts, vec!["older", "new"]);
+        assert_eq!(texts, vec!["new"]);
+    }
+
+    // ── Tool-pair safety during truncation ─────────────────────────
+
+    fn tool_use_msg(id: &str) -> ConversationMessage {
+        ConversationMessage {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: id.to_string(),
+                name: "search".to_string(),
+                input: serde_json::json!({}),
+                provider_metadata: None,
+            }],
+        }
+    }
+
+    fn tool_result_msg(id: &str) -> ConversationMessage {
+        ConversationMessage {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: id.to_string(),
+                content: "result".to_string(),
+                is_error: false,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn truncation_never_orphans_tool_results() {
+        // Two complete tool exchanges; a naive cut would land between the
+        // second tool-use and its result.
+        let store = InMemoryStore::with_max_messages(3);
+        store
+            .add_message("c1", msg(Role::User, "q1"))
+            .await
+            .unwrap();
+        store.add_message("c1", tool_use_msg("t1")).await.unwrap();
+        store
+            .add_message("c1", tool_result_msg("t1"))
+            .await
+            .unwrap();
+        store
+            .add_message("c1", msg(Role::Assistant, "a1"))
+            .await
+            .unwrap();
+        store
+            .add_message("c1", msg(Role::User, "q2"))
+            .await
+            .unwrap();
+        store.add_message("c1", tool_use_msg("t2")).await.unwrap();
+        store
+            .add_message("c1", tool_result_msg("t2"))
+            .await
+            .unwrap();
+        store
+            .add_message("c1", msg(Role::Assistant, "a2"))
+            .await
+            .unwrap();
+
+        let history = store.get_history("c1").await.unwrap();
+
+        // History must start at the user message that opened the exchange,
+        // keeping the tool-use/tool-result pair intact.
+        assert_eq!(history[0].role, Role::User);
+        for (i, m) in history.iter().enumerate() {
+            if m.role == Role::Tool {
+                assert!(
+                    matches!(history[i - 1].role, Role::Assistant),
+                    "tool result at {i} must follow its assistant tool-use"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn truncation_mid_tool_loop_rewinds_to_opening_user_message() {
+        // A long tool loop: the truncation window contains no user message,
+        // so the cut rewinds to the user message that opened the exchange
+        // rather than returning orphaned tool results.
+        let store = InMemoryStore::with_max_messages(2);
+        store.add_message("c1", msg(Role::User, "q")).await.unwrap();
+        for i in 0..3 {
+            store
+                .add_message("c1", tool_use_msg(&format!("t{i}")))
+                .await
+                .unwrap();
+            store
+                .add_message("c1", tool_result_msg(&format!("t{i}")))
+                .await
+                .unwrap();
+        }
+
+        let history = store.get_history("c1").await.unwrap();
+        assert_eq!(history[0].role, Role::User);
+        assert_eq!(history.len(), 7);
     }
 }

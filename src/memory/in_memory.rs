@@ -108,7 +108,8 @@ impl InMemoryStore {
             return Ok(messages);
         }
 
-        // Check if the first message is a system prompt.
+        // Check if the first message is a system prompt (only present when
+        // stored manually; the agent keeps its system prompt outside memory).
         let has_system = matches!(messages.first(), Some(m) if m.role == Role::System);
 
         if has_system {
@@ -116,12 +117,14 @@ impl InMemoryStore {
             let system = messages[0].clone();
             let keep = max.saturating_sub(1);
             let start = messages.len().saturating_sub(keep);
+            let start = pair_safe_start(&messages, start.max(1));
             let mut result = vec![system];
             result.extend_from_slice(&messages[start..]);
             Ok(result)
         } else {
             // Keep most recent `max` messages.
             let start = messages.len().saturating_sub(max);
+            let start = pair_safe_start(&messages, start);
             Ok(messages[start..].to_vec())
         }
     }
@@ -130,6 +133,32 @@ impl InMemoryStore {
         let mut convos = self.conversations.write().await;
         convos.remove(conversation_id);
         Ok(())
+    }
+}
+
+/// Adjust a truncation cut so history starts at a user message.
+///
+/// Cutting between an assistant tool-use message and its tool-result
+/// message produces orphaned tool results that every provider rejects.
+/// A user message is always a safe boundary because tool-use/tool-result
+/// pairs never span across one.
+///
+/// Prefers the first user message at or after `desired` (stays within the
+/// requested budget); if the window contains none (mid tool-loop), rewinds
+/// to the user message that opened the current exchange.
+fn pair_safe_start(messages: &[ConversationMessage], desired: usize) -> usize {
+    if desired >= messages.len() {
+        return desired;
+    }
+    match messages[desired..]
+        .iter()
+        .position(|m| m.role == Role::User)
+    {
+        Some(offset) => desired + offset,
+        None => messages[..desired]
+            .iter()
+            .rposition(|m| m.role == Role::User)
+            .unwrap_or(desired),
     }
 }
 

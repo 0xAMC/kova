@@ -9,6 +9,7 @@ use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, si
 use aws_sigv4::sign::v4;
 use aws_smithy_eventstream::frame::{DecodedFrame, MessageFrameDecoder};
 use futures::{Stream, StreamExt};
+use tracing::Instrument;
 
 /// Percent-encode a model identifier for use in a URL path segment.
 ///
@@ -164,76 +165,81 @@ impl LlmProvider for BedrockProvider {
             llm.output_tokens = tracing::field::Empty,
             llm.stop_reason = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let base = self.resolve_base_url("bedrock-runtime");
+            let encoded_model = url_encode_model_id(&self.config.model_id);
+            let url = format!("{}/model/{}/converse", base, encoded_model);
 
-        let base = self.resolve_base_url("bedrock-runtime");
-        let encoded_model = url_encode_model_id(&self.config.model_id);
-        let url = format!("{}/model/{}/converse", base, encoded_model);
-
-        let bedrock_request = format_request(
-            messages,
-            tools,
-            config,
-            self.config.additional_model_request_fields.clone(),
-        );
-        let body = serde_json::to_vec(&bedrock_request).map_err(|e| KovaError::Provider {
-            message: format!("Failed to serialize request: {e}"),
-            status_code: None,
-        })?;
-        tracing::debug!(body = %String::from_utf8_lossy(&body), "Bedrock request body");
-
-        let signed_headers = self.sign_request("POST", &url, &body).await?;
-
-        let mut req = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .body(body);
-        for (name, value) in &signed_headers {
-            req = req.header(name.as_str(), value.as_str());
-        }
-
-        let response = req.send().await.map_err(|e| {
-            let err = map_request_error(e, self.config.timeout);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "Bedrock chat_completion request failed");
-            err
-        })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = parse_bedrock_error(status.as_u16(), &body);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "Bedrock provider returned error");
-            return Err(err);
-        }
-
-        let response_text = response.text().await.map_err(|e| {
-            let err = KovaError::Provider {
-                message: format!("Failed to read response body: {e}"),
+            let bedrock_request = format_request(
+                messages,
+                tools,
+                config,
+                self.config.additional_model_request_fields.clone(),
+            );
+            let body = serde_json::to_vec(&bedrock_request).map_err(|e| KovaError::Provider {
+                message: format!("Failed to serialize request: {e}"),
                 status_code: None,
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            err
-        })?;
-        tracing::debug!(body = %response_text, "Bedrock response body");
-        let bedrock_response: BedrockConverseResponse = serde_json::from_str(&response_text)
-            .map_err(|e| {
+            })?;
+            tracing::debug!(body = %String::from_utf8_lossy(&body), "Bedrock request body");
+
+            let signed_headers = self.sign_request("POST", &url, &body).await?;
+
+            let mut req = self
+                .client
+                .post(&url)
+                .header("content-type", "application/json")
+                .body(body);
+            for (name, value) in &signed_headers {
+                req = req.header(name.as_str(), value.as_str());
+            }
+
+            let response = req.send().await.map_err(|e| {
+                let err = map_request_error(e, self.config.timeout);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "Bedrock chat_completion request failed");
+                err
+            })?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = parse_bedrock_error(status.as_u16(), &body);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "Bedrock provider returned error");
+                return Err(err);
+            }
+
+            let response_text = response.text().await.map_err(|e| {
                 let err = KovaError::Provider {
-                    message: format!("Failed to deserialize response: {e}"),
+                    message: format!("Failed to read response body: {e}"),
                     status_code: None,
                 };
                 tracing::Span::current().record("otel.status_code", "ERROR");
                 err
             })?;
+            tracing::debug!(body = %response_text, "Bedrock response body");
+            let bedrock_response: BedrockConverseResponse = serde_json::from_str(&response_text)
+                .map_err(|e| {
+                    let err = KovaError::Provider {
+                        message: format!("Failed to deserialize response: {e}"),
+                        status_code: None,
+                    };
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    err
+                })?;
 
-        tracing::Span::current().record("llm.input_tokens", bedrock_response.usage.input_tokens);
-        tracing::Span::current().record("llm.output_tokens", bedrock_response.usage.output_tokens);
-        tracing::Span::current().record("llm.stop_reason", bedrock_response.stop_reason.as_str());
-        tracing::info!("Bedrock chat completion succeeded");
+            tracing::Span::current()
+                .record("llm.input_tokens", bedrock_response.usage.input_tokens);
+            tracing::Span::current()
+                .record("llm.output_tokens", bedrock_response.usage.output_tokens);
+            tracing::Span::current()
+                .record("llm.stop_reason", bedrock_response.stop_reason.as_str());
+            tracing::info!("Bedrock chat completion succeeded");
 
-        format_response(bedrock_response)
+            format_response(bedrock_response)
+        }
+        .instrument(span)
+        .await
     }
 
     async fn chat_completion_stream(
@@ -248,97 +254,106 @@ impl LlmProvider for BedrockProvider {
             model = %self.config.model_id,
             otel.status_code = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let base = self.resolve_base_url("bedrock-runtime");
+            let encoded_model = url_encode_model_id(&self.config.model_id);
+            let url = format!("{}/model/{}/converse-stream", base, encoded_model);
 
-        let base = self.resolve_base_url("bedrock-runtime");
-        let encoded_model = url_encode_model_id(&self.config.model_id);
-        let url = format!("{}/model/{}/converse-stream", base, encoded_model);
+            let bedrock_request = format_request(
+                messages,
+                tools,
+                config,
+                self.config.additional_model_request_fields.clone(),
+            );
+            let body = serde_json::to_vec(&bedrock_request).map_err(|e| KovaError::Provider {
+                message: format!("Failed to serialize request: {e}"),
+                status_code: None,
+            })?;
+            tracing::debug!(body = %String::from_utf8_lossy(&body), "Bedrock stream request body");
 
-        let bedrock_request = format_request(
-            messages,
-            tools,
-            config,
-            self.config.additional_model_request_fields.clone(),
-        );
-        let body = serde_json::to_vec(&bedrock_request).map_err(|e| KovaError::Provider {
-            message: format!("Failed to serialize request: {e}"),
-            status_code: None,
-        })?;
-        tracing::debug!(body = %String::from_utf8_lossy(&body), "Bedrock stream request body");
+            let signed_headers = self.sign_request("POST", &url, &body).await?;
 
-        let signed_headers = self.sign_request("POST", &url, &body).await?;
+            let mut req = self
+                .client
+                .post(&url)
+                .header("content-type", "application/json")
+                .body(body);
+            for (name, value) in &signed_headers {
+                req = req.header(name.as_str(), value.as_str());
+            }
 
-        let mut req = self
-            .client
-            .post(&url)
-            .header("content-type", "application/json")
-            .body(body);
-        for (name, value) in &signed_headers {
-            req = req.header(name.as_str(), value.as_str());
-        }
+            let response = req.send().await.map_err(|e| {
+                let err = map_request_error(e, self.config.timeout);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "Bedrock stream request failed");
+                err
+            })?;
 
-        let response = req.send().await.map_err(|e| {
-            let err = map_request_error(e, self.config.timeout);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "Bedrock stream request failed");
-            err
-        })?;
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = parse_bedrock_error(status.as_u16(), &body);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "Bedrock stream provider returned error");
+                return Err(err);
+            }
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = parse_bedrock_error(status.as_u16(), &body);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "Bedrock stream provider returned error");
-            return Err(err);
-        }
+            let byte_stream = response.bytes_stream();
 
-        let byte_stream = response.bytes_stream();
-
-        let stream = futures::stream::try_unfold(
-            (
-                byte_stream,
-                MessageFrameDecoder::new(),
-                bytes::BytesMut::new(),
-            ),
-            |(mut byte_stream, mut decoder, mut buffer)| async move {
-                loop {
-                    match decoder.decode_frame(&mut buffer) {
-                        Ok(DecodedFrame::Complete(message)) => {
-                            match parse_event_stream_frame(&message) {
-                                Ok(Some(bedrock_event)) => {
-                                    if let Some(stream_event) = format_stream_event(bedrock_event) {
-                                        return Ok(Some((
-                                            stream_event,
-                                            (byte_stream, decoder, buffer),
-                                        )));
+            let stream = futures::stream::try_unfold(
+                (
+                    byte_stream,
+                    MessageFrameDecoder::new(),
+                    bytes::BytesMut::new(),
+                ),
+                |(mut byte_stream, mut decoder, mut buffer)| async move {
+                    loop {
+                        match decoder.decode_frame(&mut buffer) {
+                            Ok(DecodedFrame::Complete(message)) => {
+                                match parse_event_stream_frame(&message) {
+                                    Ok(Some(bedrock_event)) => {
+                                        if let Some(stream_event) =
+                                            format_stream_event(bedrock_event)
+                                        {
+                                            return Ok(Some((
+                                                stream_event,
+                                                (byte_stream, decoder, buffer),
+                                            )));
+                                        }
+                                        continue;
                                     }
-                                    continue;
+                                    Ok(None) => continue,
+                                    Err(e) => return Err(e),
                                 }
-                                Ok(None) => continue,
-                                Err(e) => return Err(e),
+                            }
+                            Ok(DecodedFrame::Incomplete) => {}
+                            Err(e) => {
+                                return Err(KovaError::Stream(format!(
+                                    "Failed to decode event stream frame: {e}"
+                                )));
                             }
                         }
-                        Ok(DecodedFrame::Incomplete) => {}
-                        Err(e) => {
-                            return Err(KovaError::Stream(format!(
-                                "Failed to decode event stream frame: {e}"
-                            )));
+
+                        match byte_stream.next().await {
+                            Some(Ok(chunk)) => buffer.extend_from_slice(&chunk),
+                            Some(Err(e)) => {
+                                return Err(KovaError::Stream(format!(
+                                    "Stream connection error: {e}"
+                                )));
+                            }
+                            None => return Ok(None),
                         }
                     }
+                },
+            );
 
-                    match byte_stream.next().await {
-                        Some(Ok(chunk)) => buffer.extend_from_slice(&chunk),
-                        Some(Err(e)) => {
-                            return Err(KovaError::Stream(format!("Stream connection error: {e}")));
-                        }
-                        None => return Ok(None),
-                    }
-                }
-            },
-        );
-
-        Ok(Box::pin(stream))
+            Ok(Box::pin(stream)
+                as Pin<
+                    Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>,
+                >)
+        }
+        .instrument(span)
+        .await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
@@ -347,53 +362,55 @@ impl LlmProvider for BedrockProvider {
             provider = "bedrock",
             otel.status_code = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let base = self.resolve_base_url("bedrock");
+            let url = format!("{}/foundation-models", base);
 
-        let base = self.resolve_base_url("bedrock");
-        let url = format!("{}/foundation-models", base);
+            let signed_headers = self.sign_request("GET", &url, &[]).await?;
 
-        let signed_headers = self.sign_request("GET", &url, &[]).await?;
+            let mut req = self.client.get(&url);
+            for (name, value) in &signed_headers {
+                req = req.header(name.as_str(), value.as_str());
+            }
 
-        let mut req = self.client.get(&url);
-        for (name, value) in &signed_headers {
-            req = req.header(name.as_str(), value.as_str());
+            let response = req.send().await.map_err(|e| {
+                let err = map_request_error(e, self.config.timeout);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "Bedrock list_models request failed");
+                err
+            })?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = parse_bedrock_error(status.as_u16(), &body);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "Bedrock list_models provider returned error");
+                return Err(err);
+            }
+
+            let list_response: BedrockModelListResponse = response.json().await.map_err(|e| {
+                let err = KovaError::Provider {
+                    message: format!("Failed to deserialize model list response: {e}"),
+                    status_code: None,
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                err
+            })?;
+
+            Ok(list_response
+                .model_summaries
+                .into_iter()
+                .map(|s| ModelInfo {
+                    id: s.model_id,
+                    object: "model".to_string(),
+                    created: 0,
+                    owned_by: s.provider_name,
+                })
+                .collect())
         }
-
-        let response = req.send().await.map_err(|e| {
-            let err = map_request_error(e, self.config.timeout);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "Bedrock list_models request failed");
-            err
-        })?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = parse_bedrock_error(status.as_u16(), &body);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "Bedrock list_models provider returned error");
-            return Err(err);
-        }
-
-        let list_response: BedrockModelListResponse = response.json().await.map_err(|e| {
-            let err = KovaError::Provider {
-                message: format!("Failed to deserialize model list response: {e}"),
-                status_code: None,
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            err
-        })?;
-
-        Ok(list_response
-            .model_summaries
-            .into_iter()
-            .map(|s| ModelInfo {
-                id: s.model_id,
-                object: "model".to_string(),
-                created: 0,
-                owned_by: s.provider_name,
-            })
-            .collect())
+        .instrument(span)
+        .await
     }
 }
 

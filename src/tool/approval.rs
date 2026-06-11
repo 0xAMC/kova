@@ -4,22 +4,26 @@ use serde_json::Value;
 /// Decision returned by a [`ToolApprovalHandler`] for a pending tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalDecision {
-    /// Allow this invocation only.
+    /// Allow this invocation only; the handler is asked again next time.
     Approved,
-    /// Allow this invocation and remember the approval for the session.
+    /// Allow this invocation and all future invocations of this tool for the
+    /// lifetime of the agent. The handler is not consulted again for it.
     ApprovedForSession,
-    /// Block this invocation only.
+    /// Block this invocation only; the handler is asked again next time.
     Denied,
-    /// Block this invocation and persist the denial as a permanent rule.
+    /// Block this invocation and all future invocations of this tool for the
+    /// lifetime of the agent. The handler is not consulted again for it.
+    /// Persisting the rule beyond the agent's lifetime is the handler's
+    /// responsibility.
     DeniedAlways,
 }
 
 /// Gate that is consulted before every tool execution.
 ///
 /// Implement this trait to add interactive prompts, pattern-based allow/deny
-/// rules, or any other approval policy. The agent calls [`approve`] with the
-/// tool name and its JSON arguments; execution only proceeds on `Approved` or
-/// `ApprovedForSession`.
+/// rules, or any other approval policy. The agent calls
+/// [`approve`](Self::approve) with the tool name and its JSON arguments;
+/// execution only proceeds on `Approved` or `ApprovedForSession`.
 ///
 /// Implementations must be `Send + Sync` because the agent executes tools
 /// concurrently.

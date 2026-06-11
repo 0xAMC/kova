@@ -70,6 +70,10 @@ pub(crate) struct GeminiGenerationConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) top_p: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stop_sequences: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) thinking_config: Option<GeminiThinkingConfig>,
 }
 

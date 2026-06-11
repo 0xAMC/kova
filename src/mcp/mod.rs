@@ -1,6 +1,7 @@
 pub mod tool;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -8,6 +9,9 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
 
 use crate::error::KovaError;
+
+/// Default per-request timeout for MCP calls (handshake, tools/list, tools/call).
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// MCP transport configuration.
 #[derive(Debug, Clone)]
@@ -111,18 +115,35 @@ enum McpConnection {
 /// [`tools_call`](Self::tools_call) to invoke them.
 pub struct McpClient {
     connection: Arc<Mutex<McpConnection>>,
+    request_timeout: Duration,
 }
 
 impl McpClient {
     /// Establish a connection to an MCP server using the given transport.
+    ///
+    /// Uses a 30-second per-request timeout; see
+    /// [`connect_with_timeout`](Self::connect_with_timeout) to customise.
     pub async fn connect(transport: McpTransport) -> Result<Self, KovaError> {
+        Self::connect_with_timeout(transport, DEFAULT_REQUEST_TIMEOUT).await
+    }
+
+    /// Establish a connection with a custom per-request timeout.
+    ///
+    /// The timeout bounds every JSON-RPC round-trip (the `initialize`
+    /// handshake, `tools/list`, and each `tools/call`), so a wedged server
+    /// cannot hang the agent loop indefinitely.
+    pub async fn connect_with_timeout(
+        transport: McpTransport,
+        request_timeout: Duration,
+    ) -> Result<Self, KovaError> {
         let connection = match transport {
             McpTransport::Stdio { command, args } => {
                 let mut child = tokio::process::Command::new(&command)
                     .args(&args)
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
+                    .kill_on_drop(true)
                     .spawn()
                     .map_err(|e| {
                         KovaError::Mcp(format!("Failed to spawn MCP process '{}': {}", command, e))
@@ -135,6 +156,17 @@ impl McpClient {
                     KovaError::Mcp("Failed to capture stdout of MCP process".into())
                 })?;
 
+                // Surface server diagnostics instead of discarding them.
+                if let Some(stderr) = child.stderr.take() {
+                    let server = command.clone();
+                    tokio::spawn(async move {
+                        let mut lines = BufReader::new(stderr).lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            tracing::debug!(mcp.server = %server, "stderr: {line}");
+                        }
+                    });
+                }
+
                 let conn = StdioConnection {
                     stdin,
                     stdout: BufReader::new(stdout),
@@ -144,12 +176,16 @@ impl McpClient {
 
                 // Send initialize request per MCP protocol.
                 let mut locked = conn;
-                Self::send_stdio_initialize(&mut locked).await?;
+                tokio::time::timeout(request_timeout, Self::send_stdio_initialize(&mut locked))
+                    .await
+                    .map_err(|_| KovaError::Timeout(request_timeout))??;
                 McpConnection::Stdio(Box::new(locked))
             }
             McpTransport::HttpSse { url } => {
-                let client = reqwest::Client::new();
-                // Verify the server is reachable with a simple request.
+                let client = reqwest::Client::builder()
+                    .timeout(request_timeout)
+                    .build()
+                    .map_err(|e| KovaError::Mcp(format!("Failed to build MCP HTTP client: {e}")))?;
                 let conn = HttpConnection {
                     base_url: url.trim_end_matches('/').to_string(),
                     client,
@@ -161,13 +197,19 @@ impl McpClient {
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
+            request_timeout,
         })
     }
 
     /// Discover available tools from the MCP server.
     pub async fn tools_list(&self) -> Result<Vec<McpToolDefinition>, KovaError> {
         let mut conn = self.connection.lock().await;
-        let response = Self::send_request(&mut conn, "tools/list", None).await?;
+        let response = tokio::time::timeout(
+            self.request_timeout,
+            Self::send_request(&mut conn, "tools/list", None),
+        )
+        .await
+        .map_err(|_| KovaError::Timeout(self.request_timeout))??;
 
         let result: ToolsListResult = serde_json::from_value(response)
             .map_err(|e| KovaError::Mcp(format!("Failed to parse tools/list response: {}", e)))?;
@@ -188,7 +230,12 @@ impl McpClient {
             "arguments": arguments,
         });
 
-        let response = Self::send_request(&mut conn, "tools/call", Some(params)).await?;
+        let response = tokio::time::timeout(
+            self.request_timeout,
+            Self::send_request(&mut conn, "tools/call", Some(params)),
+        )
+        .await
+        .map_err(|_| KovaError::Timeout(self.request_timeout))??;
 
         let result: McpCallResult = serde_json::from_value(response)
             .map_err(|e| KovaError::Mcp(format!("Failed to parse tools/call response: {}", e)))?;
@@ -373,6 +420,7 @@ impl McpClient {
                 client: reqwest::Client::new(),
                 next_id: 1,
             }))),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         }
     }
 }
