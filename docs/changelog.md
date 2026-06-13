@@ -2,7 +2,39 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
-## Unreleased
+## 0.3.0 - Stateless agent loop
+
+### Added
+- **Stateless core loop**: `Agent::run(&[ConversationMessage]) -> AgentResponse` — caller-supplied history in, full result out, no memory-store involvement. `AgentResponse` carries `text`, `new_messages` (everything the turn produced, for the caller to persist), `stop_reason`, aggregated `usage` across all provider calls in the turn, `llm_calls`, and `thinking`.
+- `Agent::run_with_config(messages, overrides)` — per-call `InferenceConfig` overrides; unset fields fall back to the agent's defaults.
+- `Agent::run_stream(messages) -> impl Stream<Item = Result<AgentEvent, _>>` — pull-based streaming with `TextDelta`, `ThinkingDelta`, `ToolCallStarted`, `ToolCallFinished`, and `TurnCompleted` events. No `StreamingHandler` registration required.
+- `Agent::chat_response(conversation_id, text) -> AgentResponse` — session-backed variant of `chat` returning the full response.
+- **Retries**: `RetryConfig` (default: 2 retries, exponential backoff capped at 10 s) applied to every provider call and stream establishment; only errors where `KovaError::is_retryable()` is true are retried. Configure via `AgentBuilder::retry_config`, disable with `RetryConfig::disabled()`.
+- **Provider feature flags**: `openai`, `gemini`, `ollama`, `bedrock` (all default). `default-features = false, features = ["openai"]` skips compiling the AWS dependency stack entirely.
+- `KovaError::status_code()` and `KovaError::is_retryable()` helpers.
+- `InferenceConfig::top_p` and `InferenceConfig::stop_sequences`, wired through all four providers.
+- `StreamEvent::ToolUseDelta::index` — provider-assigned correlation key (OpenAI `index`, Bedrock `contentBlockIndex`) for matching argument deltas to tool calls.
+- `kova_sdk::prelude` — one-line import of the common types.
+- `AgentBuilder::metrics(Arc<MetricsCollector>)` — the agent records LLM latency/tokens/errors and tool durations automatically.
+- `McpClient::connect_with_timeout` — per-request timeout (default 30 s) bounding the MCP handshake, `tools/list`, and every `tools/call`.
+- Approval decisions `ApprovedForSession` / `DeniedAlways` are now enforced by the agent for its lifetime (handler consulted once per tool).
+- `ApprovalDecision::DeniedWithReason(String)` — deny a single call and pass a free-text reason back to the model as part of the error tool result, so it can adapt (e.g. "use the staging database instead"). `UsageStats` now derives `Default`.
+- `Orchestrator::execute_in_namespace` — explicit conversation namespace for deliberate continuation; `execute()` now isolates each run.
+
+### Changed
+- **Memory writes are transactional per turn**: `chat`/`chat_stream` persist the user message and produced messages only after the turn succeeds. A failed turn leaves the conversation unchanged (previously a mid-turn failure left dangling user messages or orphaned tool-use blocks in the store).
+- `InMemoryStore` truncation is now tool-pair safe: history is cut at a user-message boundary so tool results are never orphaned (providers reject such histories).
+- `ToolRegistry` methods (`register`, `get`, `list`, `tool_definitions`) are now synchronous; `tool_definitions` returns a cached `Arc<Vec<ToolDefinition>>` invalidated on registration.
+- `MetricsCollector` histograms are fixed-bucket with constant memory (previously unbounded `Vec<f64>`); snapshot getters return `HistogramSnapshot` instead of raw samples.
+- Streamed tool-call argument deltas are correlated by provider `index`, falling back to `id`, then to the most recent call — fixes duplicated/merged calls with providers that repeat ids or interleave parallel calls.
+- Provider streaming decodes bytes line-wise (`BytesMut`), fixing UTF-8 corruption when multi-byte characters split across network chunks, and making buffering O(1) per line. The three per-provider SSE/NDJSON adapters were unified into one shared adapter.
+- Provider methods attach tracing spans with `.instrument()` instead of holding span guards across `.await` (fixes corrupted OTEL traces).
+- MCP stdio child processes are killed on drop and their stderr is logged via `tracing` instead of discarded.
+- `AgentBuilder::tool()` and `tool_registry()` now compose instead of erroring when combined.
+- SSE parsing follows the spec: at most one leading space stripped after `data:`, CRLF handled explicitly.
+
+### Removed
+- `KovaError::Http(reqwest::Error)` — unused; provider transport errors map to `Connection`/`Timeout`/`Provider`.
 
 ## 0.2.0 — New providers for Gemini and Ollama
 

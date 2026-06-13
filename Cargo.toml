@@ -1,6 +1,6 @@
 [package]
 name = "kova-sdk"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "Async-first Rust library for building LLM-powered agents with tool calling, streaming, MCP, and multi-agent orchestration"
 license = "Apache-2.0"
@@ -22,15 +22,29 @@ thiserror = "2.0.18"
 async-trait = "0.1.89"
 tracing = "0.1.44"
 pin-project-lite = "0.2.17"
-aws-sigv4 = "1.4"
-aws-credential-types = { version = "1.2", features = ["hardcoded-credentials"] }
-aws-config = "1.8"
-aws-smithy-runtime-api = "1.12"
-aws-smithy-eventstream = "0.60.20"
-aws-smithy-types = "1.4"
-http = "1.4"
+async-stream = "0.3"
+aws-sigv4 = { version = "1.4", optional = true }
+aws-credential-types = { version = "1.2", features = ["hardcoded-credentials"], optional = true }
+aws-config = { version = "1.8", optional = true }
+aws-smithy-runtime-api = { version = "1.12", optional = true }
+aws-smithy-eventstream = { version = "0.60.20", optional = true }
+aws-smithy-types = { version = "1.4", optional = true }
+http = { version = "1.4", optional = true }
 
 [features]
+default = ["openai", "gemini", "ollama", "bedrock"]
+openai = []
+gemini = []
+ollama = []
+bedrock = [
+    "dep:aws-sigv4",
+    "dep:aws-credential-types",
+    "dep:aws-config",
+    "dep:aws-smithy-runtime-api",
+    "dep:aws-smithy-eventstream",
+    "dep:aws-smithy-types",
+    "dep:http",
+]
 telemetry = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:opentelemetry-stdout"]
 
 [dependencies.tracing-subscriber]

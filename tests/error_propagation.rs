@@ -167,6 +167,7 @@ async fn test_provider_failure_returns_provider_error() {
     let provider = Arc::new(FailingProvider::provider_error());
     let agent = AgentBuilder::new()
         .provider(provider as Arc<dyn LlmProvider>)
+        .retry_config(kova_sdk::provider::RetryConfig::disabled())
         .build()
         .unwrap();
 
@@ -186,6 +187,7 @@ async fn test_connection_failure_returns_connection_error() {
     let provider = Arc::new(FailingProvider::connection_error());
     let agent = AgentBuilder::new()
         .provider(provider as Arc<dyn LlmProvider>)
+        .retry_config(kova_sdk::provider::RetryConfig::disabled())
         .build()
         .unwrap();
 
@@ -268,12 +270,13 @@ async fn test_timeout_returns_timeout_or_connection_error() {
 
     let agent = AgentBuilder::new()
         .provider(provider as Arc<dyn LlmProvider>)
+        .retry_config(kova_sdk::provider::RetryConfig::disabled())
         .build()
         .unwrap();
 
     let result = agent.chat("conv", "hello").await;
     match result {
-        Err(KovaError::Timeout(_)) | Err(KovaError::Connection(_)) | Err(KovaError::Http(_)) => {
+        Err(KovaError::Timeout(_)) | Err(KovaError::Connection(_)) => {
             // Any of these is acceptable for a timeout scenario.
         }
         other => panic!(
@@ -299,6 +302,7 @@ async fn test_http_error_propagates_through_agent() {
 
     let agent = AgentBuilder::new()
         .provider(provider as Arc<dyn LlmProvider>)
+        .retry_config(kova_sdk::provider::RetryConfig::disabled())
         .build()
         .unwrap();
 

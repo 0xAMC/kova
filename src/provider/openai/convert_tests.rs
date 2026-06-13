@@ -20,6 +20,7 @@ fn sample_config() -> InferenceConfig {
         model: Some("test-model".to_string()),
         max_tokens: Some(100),
         temperature: Some(0.7),
+        ..Default::default()
     }
 }
 
@@ -69,6 +70,7 @@ fn test_format_request_omits_none_fields() {
         model: Some("m".to_string()),
         max_tokens: None,
         temperature: None,
+        ..Default::default()
     };
     let req = format_request(&sample_messages(), &[], &config);
     let json_val = serde_json::to_value(&req).unwrap();
@@ -360,7 +362,7 @@ proptest! {
             proptest::option::of("[a-z0-9-]{1,15}"),
             proptest::option::of(1..4096u32),
             proptest::option::of(0.0f32..2.0f32),
-        ).prop_map(|(model, max_tokens, temperature)| InferenceConfig { model, max_tokens, temperature }),
+        ).prop_map(|(model, max_tokens, temperature)| InferenceConfig { model, max_tokens, temperature, ..Default::default() }),
     ) {
         let oai_req = format_request(std::slice::from_ref(&assistant_msg), &[], &config);
         prop_assert_eq!(oai_req.messages.len(), 1);

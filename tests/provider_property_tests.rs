@@ -80,6 +80,7 @@ proptest! {
                 model: Some(model_name.clone()),
                 max_tokens: None,
                 temperature: None,
+                ..Default::default()
             };
 
             let result = provider
@@ -142,6 +143,7 @@ proptest! {
                 model: Some("test-model".to_string()),
                 max_tokens: None,
                 temperature: None,
+                ..Default::default()
             };
 
             let _ = provider
@@ -190,6 +192,7 @@ proptest! {
                 model: Some("test-model".to_string()),
                 max_tokens: None,
                 temperature: None,
+                ..Default::default()
             };
 
             let _ = provider
@@ -244,6 +247,7 @@ proptest! {
                 model: Some("test-model".to_string()),
                 max_tokens: None,
                 temperature: None,
+                ..Default::default()
             };
 
             let result = provider

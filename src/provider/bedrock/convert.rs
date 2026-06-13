@@ -80,8 +80,8 @@ pub(super) fn format_request(
     let inference_config = Some(BedrockInferenceConfig {
         max_tokens: config.max_tokens,
         temperature: config.temperature,
-        top_p: None,
-        stop_sequences: None,
+        top_p: config.top_p,
+        stop_sequences: config.stop_sequences.clone(),
     });
 
     let tool_config = if tools.is_empty() {
@@ -191,13 +191,17 @@ pub(super) fn map_stop_reason(reason: &str) -> StopReason {
 
 pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEvent> {
     match event {
-        BedrockStreamEvent::ContentBlockDelta { delta, .. } => match delta {
+        BedrockStreamEvent::ContentBlockDelta {
+            delta,
+            content_block_index,
+        } => match delta {
             BedrockContentBlockDelta::Text(text) => Some(StreamEvent::ContentDelta { text }),
             BedrockContentBlockDelta::ToolUse { input } => Some(StreamEvent::ToolUseDelta {
                 id: String::new(),
                 name: None,
                 input_delta: Some(input),
                 provider_metadata: None,
+                index: Some(content_block_index),
             }),
             BedrockContentBlockDelta::ReasoningContent {
                 text: Some(ref text),
@@ -217,13 +221,17 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
                 None
             }
         },
-        BedrockStreamEvent::ContentBlockStart { start, .. } => match start {
+        BedrockStreamEvent::ContentBlockStart {
+            start,
+            content_block_index,
+        } => match start {
             BedrockContentBlockStart::ToolUse { tool_use_id, name } => {
                 Some(StreamEvent::ToolUseDelta {
                     id: tool_use_id,
                     name: Some(name),
                     input_delta: None,
                     provider_metadata: None,
+                    index: Some(content_block_index),
                 })
             }
             BedrockContentBlockStart::ReasoningContent { .. } => None,

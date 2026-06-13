@@ -1,3 +1,5 @@
+#![cfg(feature = "bedrock")]
+
 use aws_smithy_eventstream::frame::write_message_to;
 use aws_smithy_types::event_stream::{Header, HeaderValue, Message};
 use futures::StreamExt;
@@ -48,6 +50,7 @@ fn sample_config() -> InferenceConfig {
         model: None,
         max_tokens: Some(100),
         temperature: None,
+        ..Default::default()
     }
 }
 
@@ -466,6 +469,7 @@ async fn test_chat_completion_stream_tool_use() {
             name: Some("get_weather".to_string()),
             input_delta: None,
             provider_metadata: None,
+            index: Some(0),
         }
     );
     assert_eq!(
@@ -475,6 +479,7 @@ async fn test_chat_completion_stream_tool_use() {
             name: None,
             input_delta: Some("{\"city\": \"Seattle\"}".to_string()),
             provider_metadata: None,
+            index: Some(0),
         }
     );
     assert_eq!(

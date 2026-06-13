@@ -11,7 +11,7 @@ use kova_sdk::agent::AgentBuilder;
 use kova_sdk::error::KovaError;
 use kova_sdk::models::*;
 use kova_sdk::orchestrator::{Orchestrator, OrchestratorOutput, OrchestratorPattern};
-use kova_sdk::provider::LlmProvider;
+use kova_sdk::provider::{LlmProvider, RetryConfig};
 
 struct SuffixProvider {
     suffix: String,
@@ -161,6 +161,7 @@ fn build_failing_agent(msg: &str) -> Arc<kova_sdk::agent::Agent> {
     Arc::new(
         AgentBuilder::new()
             .provider(provider)
+            .retry_config(RetryConfig::disabled())
             .build()
             .expect("build failing agent"),
     )

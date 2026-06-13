@@ -2,12 +2,18 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tracing::Instrument;
 
 use crate::agent::Agent;
 use crate::error::KovaError;
+
+/// Process-wide counter used to give every `execute()` call its own
+/// conversation namespace, so repeated or concurrent runs never share
+/// (and pollute) each other's history.
+static RUN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Describes how agents should be executed in an orchestration workflow.
 pub enum OrchestratorPattern {
@@ -42,10 +48,29 @@ impl Orchestrator {
     }
 
     /// Execute the given orchestration pattern with the provided input.
+    ///
+    /// Each call runs in a fresh conversation namespace; agent memory does
+    /// not carry over between executions. Use
+    /// [`execute_in_namespace`](Self::execute_in_namespace) to deliberately
+    /// continue a previous run's conversations.
     pub async fn execute(
         &self,
         pattern: OrchestratorPattern,
         input: &str,
+    ) -> Result<OrchestratorOutput, KovaError> {
+        let run_id = format!("run{}", RUN_COUNTER.fetch_add(1, Ordering::Relaxed));
+        self.execute_in_namespace(pattern, input, &run_id).await
+    }
+
+    /// Execute the pattern with an explicit conversation namespace.
+    ///
+    /// Conversation IDs are derived as `orch-<pattern>-<namespace>-<agent>`,
+    /// so two calls with the same namespace continue the same conversations.
+    pub async fn execute_in_namespace(
+        &self,
+        pattern: OrchestratorPattern,
+        input: &str,
+        namespace: &str,
     ) -> Result<OrchestratorOutput, KovaError> {
         let pattern_type = match &pattern {
             OrchestratorPattern::Sequential(_) => "sequential",
@@ -59,16 +84,17 @@ impl Orchestrator {
         );
 
         async {
-            let result = tokio::time::timeout(self.timeout, self.execute_inner(pattern, input))
-                .await
-                .map_err(|_| {
-                    tracing::Span::current().record("otel.status_code", "ERROR");
-                    tracing::warn!("Orchestration timed out");
-                    KovaError::Orchestration(format!(
-                        "Orchestration timed out after {:?}",
-                        self.timeout
-                    ))
-                })?;
+            let result =
+                tokio::time::timeout(self.timeout, self.execute_inner(pattern, input, namespace))
+                    .await
+                    .map_err(|_| {
+                        tracing::Span::current().record("otel.status_code", "ERROR");
+                        tracing::warn!("Orchestration timed out");
+                        KovaError::Orchestration(format!(
+                            "Orchestration timed out after {:?}",
+                            self.timeout
+                        ))
+                    })?;
             if result.is_err() {
                 tracing::Span::current().record("otel.status_code", "ERROR");
             }
@@ -82,18 +108,23 @@ impl Orchestrator {
         &self,
         pattern: OrchestratorPattern,
         input: &str,
+        namespace: &str,
     ) -> Result<OrchestratorOutput, KovaError> {
         match pattern {
             OrchestratorPattern::Sequential(agent_names) => {
-                self.execute_sequential(&agent_names, input).await
+                self.execute_sequential(&agent_names, input, namespace)
+                    .await
             }
             OrchestratorPattern::Parallel(agent_names) => {
-                self.execute_parallel(&agent_names, input).await
+                self.execute_parallel(&agent_names, input, namespace).await
             }
             OrchestratorPattern::Router {
                 router_agent,
                 downstream,
-            } => self.execute_router(&router_agent, &downstream, input).await,
+            } => {
+                self.execute_router(&router_agent, &downstream, input, namespace)
+                    .await
+            }
         }
     }
 
@@ -108,6 +139,7 @@ impl Orchestrator {
         &self,
         agent_names: &[String],
         input: &str,
+        namespace: &str,
     ) -> Result<OrchestratorOutput, KovaError> {
         if agent_names.is_empty() {
             return Err(KovaError::Orchestration(
@@ -118,7 +150,7 @@ impl Orchestrator {
         let mut current_input = input.to_string();
         for (i, name) in agent_names.iter().enumerate() {
             let agent = self.get_agent(name)?;
-            let conversation_id = format!("orch-seq-{}-{}", name, i);
+            let conversation_id = format!("orch-seq-{}-{}-{}", namespace, name, i);
             current_input = agent
                 .chat(&conversation_id, &current_input)
                 .await
@@ -139,6 +171,7 @@ impl Orchestrator {
         &self,
         agent_names: &[String],
         input: &str,
+        namespace: &str,
     ) -> Result<OrchestratorOutput, KovaError> {
         if agent_names.is_empty() {
             return Err(KovaError::Orchestration(
@@ -155,7 +188,7 @@ impl Orchestrator {
         let mut handles = Vec::with_capacity(agents.len());
         for (name, agent) in agents {
             let input_owned = input.to_string();
-            let conv_id = format!("orch-par-{}", name);
+            let conv_id = format!("orch-par-{}-{}", namespace, name);
             let agent_span = tracing::info_span!(
                 "orchestrator.agent",
                 agent.name = %name,
@@ -197,9 +230,10 @@ impl Orchestrator {
         router_name: &str,
         downstream: &[String],
         input: &str,
+        namespace: &str,
     ) -> Result<OrchestratorOutput, KovaError> {
         let router = self.get_agent(router_name)?;
-        let conv_id = format!("orch-router-{}", router_name);
+        let conv_id = format!("orch-router-{}-{}", namespace, router_name);
 
         // The router agent's response should be the name of a downstream agent.
         let selected_name = router.chat(&conv_id, input).await.map_err(|e| {
@@ -217,7 +251,7 @@ impl Orchestrator {
         }
 
         let agent = self.get_agent(&selected_name)?;
-        let downstream_conv_id = format!("orch-routed-{}", selected_name);
+        let downstream_conv_id = format!("orch-routed-{}-{}", namespace, selected_name);
         let output = agent.chat(&downstream_conv_id, input).await.map_err(|e| {
             KovaError::Orchestration(format!(
                 "Downstream agent '{}' failed: {}",

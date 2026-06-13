@@ -428,3 +428,181 @@ async fn test_streaming_usage_event_delivered_to_handler() {
         "UsageEvent should be delivered to the handler"
     );
 }
+
+// ── run_stream (pull-based AgentEvent API) ─────────────────────────
+
+mod run_stream_api {
+    use super::*;
+    use kova_sdk::agent::AgentEvent;
+    use kova_sdk::models::ToolResult;
+    use kova_sdk::tool::Tool;
+    use std::collections::VecDeque;
+
+    /// Mock provider returning one pre-configured stream per call.
+    struct MultiStreamMockProvider {
+        rounds: Mutex<VecDeque<Vec<Result<StreamEvent, KovaError>>>>,
+    }
+
+    impl MultiStreamMockProvider {
+        fn new(rounds: Vec<Vec<Result<StreamEvent, KovaError>>>) -> Self {
+            Self {
+                rounds: Mutex::new(rounds.into()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmProvider for MultiStreamMockProvider {
+        async fn chat_completion(
+            &self,
+            _messages: &[ConversationMessage],
+            _tools: &[ToolDefinition],
+            _config: &InferenceConfig,
+        ) -> Result<ModelResponse, KovaError> {
+            Err(KovaError::Provider {
+                message: "use chat_completion_stream".into(),
+                status_code: None,
+            })
+        }
+
+        async fn chat_completion_stream(
+            &self,
+            _messages: &[ConversationMessage],
+            _tools: &[ToolDefinition],
+            _config: &InferenceConfig,
+        ) -> Result<
+            std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent, KovaError>> + Send>>,
+            KovaError,
+        > {
+            let round = self.rounds.lock().await.pop_front().unwrap_or_default();
+            Ok(Box::pin(stream::iter(round)))
+        }
+
+        async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
+            Ok(vec![])
+        }
+    }
+
+    struct EchoTool;
+
+    #[async_trait]
+    impl Tool for EchoTool {
+        fn name(&self) -> &str {
+            "greet"
+        }
+        fn description(&self) -> &str {
+            "greets"
+        }
+        fn parameters_schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object"})
+        }
+        async fn execute(&self, _args: serde_json::Value) -> Result<ToolResult, KovaError> {
+            Ok(ToolResult {
+                content: "hello!".to_string(),
+                is_error: false,
+            })
+        }
+    }
+
+    fn user(text: &str) -> ConversationMessage {
+        ConversationMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn run_stream_yields_tool_events_deltas_and_completion() {
+        let provider = Arc::new(MultiStreamMockProvider::new(vec![
+            vec![
+                Ok(StreamEvent::ToolUseDelta {
+                    id: "tc-1".into(),
+                    name: Some("greet".into()),
+                    input_delta: Some("{}".into()),
+                    provider_metadata: None,
+                    index: None,
+                }),
+                Ok(StreamEvent::StopEvent {
+                    stop_reason: StopReason::ToolUse,
+                }),
+            ],
+            vec![
+                Ok(StreamEvent::ContentDelta { text: "all".into() }),
+                Ok(StreamEvent::ContentDelta {
+                    text: " done".into(),
+                }),
+                Ok(StreamEvent::UsageEvent {
+                    input_tokens: 7,
+                    output_tokens: 3,
+                }),
+                Ok(StreamEvent::StopEvent {
+                    stop_reason: StopReason::EndTurn,
+                }),
+            ],
+        ]));
+
+        let agent = AgentBuilder::new()
+            .provider(provider)
+            .tool(Arc::new(EchoTool))
+            .build()
+            .unwrap();
+
+        let history = vec![user("hi")];
+        let events: Vec<AgentEvent> = {
+            use futures::StreamExt;
+            let stream = agent.run_stream(&history);
+            futures::pin_mut!(stream);
+            stream.map(|r| r.expect("no stream errors")).collect().await
+        };
+
+        assert!(matches!(
+            &events[0],
+            AgentEvent::ToolCallStarted { id, name, .. } if id == "tc-1" && name == "greet"
+        ));
+        assert!(matches!(
+            &events[1],
+            AgentEvent::ToolCallFinished { id, name, result, is_error: false }
+                if id == "tc-1" && name == "greet" && result == "hello!"
+        ));
+        assert!(matches!(&events[2], AgentEvent::TextDelta { text } if text == "all"));
+        assert!(matches!(&events[3], AgentEvent::TextDelta { text } if text == " done"));
+        match &events[4] {
+            AgentEvent::TurnCompleted { response } => {
+                assert_eq!(response.text, "all done");
+                assert_eq!(response.new_messages.len(), 3);
+                assert_eq!(response.llm_calls, 2);
+                assert_eq!(response.usage.input_tokens, 7);
+                assert_eq!(response.usage.output_tokens, 3);
+            }
+            other => panic!("expected TurnCompleted, got {other:?}"),
+        }
+        assert_eq!(events.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn run_stream_propagates_stream_errors() {
+        let provider = Arc::new(MultiStreamMockProvider::new(vec![vec![
+            Ok(StreamEvent::ContentDelta {
+                text: "partial".into(),
+            }),
+            Err(KovaError::Stream("connection dropped".into())),
+        ]]));
+
+        let agent = AgentBuilder::new().provider(provider).build().unwrap();
+        let history = vec![user("hi")];
+
+        use futures::StreamExt;
+        let stream = agent.run_stream(&history);
+        futures::pin_mut!(stream);
+        let mut saw_error = false;
+        while let Some(item) = stream.next().await {
+            if item.is_err() {
+                saw_error = true;
+                break;
+            }
+        }
+        assert!(saw_error, "stream error must surface to the consumer");
+    }
+}

@@ -3,6 +3,7 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use futures::Stream;
 use reqwest::Client;
+use tracing::Instrument;
 
 use super::config::OllamaProviderConfig;
 use super::convert::{
@@ -49,57 +50,59 @@ impl LlmProvider for OllamaProvider {
             llm.output_tokens = tracing::field::Empty,
             llm.stop_reason = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let request_body = format_request(messages, tools, config, &self.config, false);
+            let url = self.config.chat_url();
 
-        let request_body = format_request(messages, tools, config, &self.config, false);
-        let url = self.config.chat_url();
+            let start = std::time::Instant::now();
+            let response = self
+                .client
+                .post(&url)
+                .json(&request_body)
+                .send()
+                .await
+                .map_err(|e| {
+                    let err = map_request_error(e, self.config.timeout);
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    tracing::warn!(error = %err, "LLM request failed");
+                    err
+                })?;
 
-        let start = std::time::Instant::now();
-        let response = self
-            .client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| {
-                let err = map_request_error(e, self.config.timeout);
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = KovaError::Provider {
+                    message: body,
+                    status_code: Some(status.as_u16()),
+                };
                 tracing::Span::current().record("otel.status_code", "ERROR");
-                tracing::warn!(error = %err, "LLM request failed");
+                tracing::warn!(error = %err, "LLM provider returned error");
+                return Err(err);
+            }
+
+            let ollama_response: OllamaResponse = response.json().await.map_err(|e| {
+                let err = KovaError::Provider {
+                    message: format!("Failed to deserialize response: {e}"),
+                    status_code: None,
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "Failed to deserialize LLM response");
                 err
             })?;
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = KovaError::Provider {
-                message: body,
-                status_code: Some(status.as_u16()),
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "LLM provider returned error");
-            return Err(err);
+            let latency_ms = start.elapsed().as_millis() as u64;
+            tracing::Span::current().record("llm.input_tokens", ollama_response.prompt_eval_count);
+            tracing::Span::current().record("llm.output_tokens", ollama_response.eval_count);
+            tracing::Span::current().record(
+                "llm.stop_reason",
+                ollama_response.done_reason.as_deref().unwrap_or("stop"),
+            );
+            tracing::info!(latency_ms, "LLM chat completion succeeded");
+
+            format_response(ollama_response)
         }
-
-        let ollama_response: OllamaResponse = response.json().await.map_err(|e| {
-            let err = KovaError::Provider {
-                message: format!("Failed to deserialize response: {e}"),
-                status_code: None,
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "Failed to deserialize LLM response");
-            err
-        })?;
-
-        let latency_ms = start.elapsed().as_millis() as u64;
-        tracing::Span::current().record("llm.input_tokens", ollama_response.prompt_eval_count);
-        tracing::Span::current().record("llm.output_tokens", ollama_response.eval_count);
-        tracing::Span::current().record(
-            "llm.stop_reason",
-            ollama_response.done_reason.as_deref().unwrap_or("stop"),
-        );
-        tracing::info!(latency_ms, "LLM chat completion succeeded");
-
-        format_response(ollama_response)
+        .instrument(span)
+        .await
     }
 
     async fn chat_completion_stream(
@@ -115,39 +118,39 @@ impl LlmProvider for OllamaProvider {
             model = %model,
             otel.status_code = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let request_body = format_request(messages, tools, config, &self.config, true);
+            let url = self.config.chat_url();
 
-        let request_body = format_request(messages, tools, config, &self.config, true);
-        let url = self.config.chat_url();
+            let response = self
+                .client
+                .post(&url)
+                .json(&request_body)
+                .send()
+                .await
+                .map_err(|e| {
+                    let err = map_request_error(e, self.config.timeout);
+                    tracing::Span::current().record("otel.status_code", "ERROR");
+                    tracing::warn!(error = %err, "LLM stream request failed");
+                    err
+                })?;
 
-        let response = self
-            .client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await
-            .map_err(|e| {
-                let err = map_request_error(e, self.config.timeout);
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = KovaError::Provider {
+                    message: body,
+                    status_code: Some(status.as_u16()),
+                };
                 tracing::Span::current().record("otel.status_code", "ERROR");
-                tracing::warn!(error = %err, "LLM stream request failed");
-                err
-            })?;
+                tracing::warn!(error = %err, "LLM stream provider returned error");
+                return Err(err);
+            }
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = KovaError::Provider {
-                message: body,
-                status_code: Some(status.as_u16()),
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "LLM stream provider returned error");
-            return Err(err);
+            Ok(ndjson_byte_stream_to_events(response.bytes_stream()))
         }
-
-        Ok(Box::pin(ndjson_byte_stream_to_events(
-            response.bytes_stream(),
-        )))
+        .instrument(span)
+        .await
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
@@ -156,38 +159,40 @@ impl LlmProvider for OllamaProvider {
             provider = "ollama",
             otel.status_code = tracing::field::Empty,
         );
-        let _guard = span.enter();
+        async {
+            let url = self.config.tags_url();
+            let response = self.client.get(&url).send().await.map_err(|e| {
+                let err = map_request_error(e, self.config.timeout);
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "List models request failed");
+                err
+            })?;
 
-        let url = self.config.tags_url();
-        let response = self.client.get(&url).send().await.map_err(|e| {
-            let err = map_request_error(e, self.config.timeout);
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "List models request failed");
-            err
-        })?;
+            let status = response.status();
+            if !status.is_success() {
+                let body = response.text().await.unwrap_or_default();
+                let err = KovaError::Provider {
+                    message: body,
+                    status_code: Some(status.as_u16()),
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                tracing::warn!(error = %err, "List models provider returned error");
+                return Err(err);
+            }
 
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            let err = KovaError::Provider {
-                message: body,
-                status_code: Some(status.as_u16()),
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            tracing::warn!(error = %err, "List models provider returned error");
-            return Err(err);
+            let model_list: OllamaModelListResponse = response.json().await.map_err(|e| {
+                let err = KovaError::Provider {
+                    message: format!("Failed to deserialize model list: {e}"),
+                    status_code: None,
+                };
+                tracing::Span::current().record("otel.status_code", "ERROR");
+                err
+            })?;
+
+            Ok(format_model_list(model_list))
         }
-
-        let model_list: OllamaModelListResponse = response.json().await.map_err(|e| {
-            let err = KovaError::Provider {
-                message: format!("Failed to deserialize model list: {e}"),
-                status_code: None,
-            };
-            tracing::Span::current().record("otel.status_code", "ERROR");
-            err
-        })?;
-
-        Ok(format_model_list(model_list))
+        .instrument(span)
+        .await
     }
 }
 
@@ -215,6 +220,7 @@ mod tests {
             model: Some("llama3.2".to_string()),
             max_tokens: Some(100),
             temperature: Some(0.7),
+            ..Default::default()
         }
     }
 
