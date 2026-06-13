@@ -2,7 +2,7 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
-## Unreleased — 0.3.0-rc
+## 0.3.0 - Stateless agent loop
 
 ### Added
 - **Stateless core loop**: `Agent::run(&[ConversationMessage]) -> AgentResponse` — caller-supplied history in, full result out, no memory-store involvement. `AgentResponse` carries `text`, `new_messages` (everything the turn produced, for the caller to persist), `stop_reason`, aggregated `usage` across all provider calls in the turn, `llm_calls`, and `thinking`.
