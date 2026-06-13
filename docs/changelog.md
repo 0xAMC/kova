@@ -18,6 +18,7 @@ All notable changes to the `kova-sdk` library are documented here.
 - `AgentBuilder::metrics(Arc<MetricsCollector>)` — the agent records LLM latency/tokens/errors and tool durations automatically.
 - `McpClient::connect_with_timeout` — per-request timeout (default 30 s) bounding the MCP handshake, `tools/list`, and every `tools/call`.
 - Approval decisions `ApprovedForSession` / `DeniedAlways` are now enforced by the agent for its lifetime (handler consulted once per tool).
+- `ApprovalDecision::DeniedWithReason(String)` — deny a single call and pass a free-text reason back to the model as part of the error tool result, so it can adapt (e.g. "use the staging database instead"). `UsageStats` now derives `Default`.
 - `Orchestrator::execute_in_namespace` — explicit conversation namespace for deliberate continuation; `execute()` now isolates each run.
 
 ### Changed

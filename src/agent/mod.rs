@@ -939,38 +939,51 @@ impl Agent {
                             (format!("Tool not found: {}", tool_name), true)
                         }
                         Some(tool) => {
-                            let denied = if let Some(handler) = &approval {
+                            // None = approved; Some(reason) = denied with the
+                            // message to surface to the model.
+                            let denial: Option<String> = if let Some(handler) = &approval {
                                 let cached = cache
                                     .read()
                                     .ok()
                                     .and_then(|c| c.get(&tool_name).copied());
                                 match cached {
-                                    Some(approved) => !approved,
+                                    Some(true) => None,
+                                    Some(false) => {
+                                        Some(format!("Tool execution denied: {}", tool_name))
+                                    }
                                     None => match handler.approve(&tool_name, &input).await {
-                                        ApprovalDecision::Approved => false,
+                                        ApprovalDecision::Approved => None,
                                         ApprovalDecision::ApprovedForSession => {
                                             if let Ok(mut c) = cache.write() {
                                                 c.insert(tool_name.clone(), true);
                                             }
-                                            false
+                                            None
                                         }
-                                        ApprovalDecision::Denied => true,
+                                        ApprovalDecision::Denied => {
+                                            Some(format!("Tool execution denied: {}", tool_name))
+                                        }
+                                        ApprovalDecision::DeniedWithReason(reason) => Some(
+                                            format!(
+                                                "Tool execution denied: {}. Reason: {}",
+                                                tool_name, reason
+                                            ),
+                                        ),
                                         ApprovalDecision::DeniedAlways => {
                                             if let Ok(mut c) = cache.write() {
                                                 c.insert(tool_name.clone(), false);
                                             }
-                                            true
+                                            Some(format!("Tool execution denied: {}", tool_name))
                                         }
                                     },
                                 }
                             } else {
-                                false
+                                None
                             };
 
-                            if denied {
+                            if let Some(denial_msg) = denial {
                                 tracing::Span::current().record("otel.status_code", "ERROR");
                                 tracing::info!(tool.name = %tool_name, "Tool execution denied");
-                                (format!("Tool execution denied: {}", tool_name), true)
+                                (denial_msg, true)
                             } else {
                                 if let Some(ref h) = hook {
                                     h.on_tool_start(&tool_name, &input).await;

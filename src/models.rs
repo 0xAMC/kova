@@ -67,7 +67,7 @@ impl StopReason {
 
 // ── Usage Stats ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct UsageStats {
     pub input_tokens: u32,
     pub output_tokens: u32,
