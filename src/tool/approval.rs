@@ -11,6 +11,10 @@ pub enum ApprovalDecision {
     ApprovedForSession,
     /// Block this invocation only; the handler is asked again next time.
     Denied,
+    /// Block this invocation only, returning `reason` to the model as part of
+    /// the error tool result so it can adapt (e.g. "user said: use the staging
+    /// database instead").
+    DeniedWithReason(String),
     /// Block this invocation and all future invocations of this tool for the
     /// lifetime of the agent. The handler is not consulted again for it.
     /// Persisting the rule beyond the agent's lifetime is the handler's
