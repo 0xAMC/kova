@@ -24,6 +24,78 @@ use crate::models::{
 use crate::streaming::line_stream::{LineOutcome, line_stream_to_events};
 use crate::streaming::sse::{SseLine, parse_sse_data, parse_sse_line};
 
+// ── Tool-parameter schema sanitisation ─────────────────────────────
+//
+// Gemini's function-calling API only accepts a subset of JSON Schema
+// (an OpenAPI 3.0 `Schema`). Draft keywords like `$schema`,
+// `exclusiveMinimum`/`exclusiveMaximum`, `additionalProperties`, `$ref`,
+// etc. are rejected with HTTP 400 "Unknown name ...". Tool schemas may
+// carry these (e.g. from `schemars`), so we recursively keep only the
+// fields Gemini documents and recurse into nested schemas.
+const GEMINI_SCHEMA_KEYS: &[&str] = &[
+    "type",
+    "format",
+    "title",
+    "description",
+    "nullable",
+    "enum",
+    "items",
+    "properties",
+    "required",
+    "minItems",
+    "maxItems",
+    "minProperties",
+    "maxProperties",
+    "minLength",
+    "maxLength",
+    "minimum",
+    "maximum",
+    "pattern",
+    "example",
+    "default",
+    "anyOf",
+    "propertyOrdering",
+];
+
+fn sanitize_schema_for_gemini(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (key, val) in map {
+                if !GEMINI_SCHEMA_KEYS.contains(&key.as_str()) {
+                    continue;
+                }
+                let sanitized = match key.as_str() {
+                    // `properties` is a map of name → schema.
+                    "properties" => match val {
+                        serde_json::Value::Object(props) => serde_json::Value::Object(
+                            props
+                                .iter()
+                                .map(|(k, v)| (k.clone(), sanitize_schema_for_gemini(v)))
+                                .collect(),
+                        ),
+                        other => other.clone(),
+                    },
+                    // `items` is a single nested schema.
+                    "items" => sanitize_schema_for_gemini(val),
+                    // `anyOf` is an array of nested schemas.
+                    "anyOf" => match val {
+                        serde_json::Value::Array(variants) => serde_json::Value::Array(
+                            variants.iter().map(sanitize_schema_for_gemini).collect(),
+                        ),
+                        other => other.clone(),
+                    },
+                    // Remaining keys (enum, required, default, …) are leaf data.
+                    _ => val.clone(),
+                };
+                out.insert(key.clone(), sanitized);
+            }
+            serde_json::Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
 // ── Tool-ID → name lookup ──────────────────────────────────────────
 //
 // Gemini's FunctionResponse requires the function name, but kova's
@@ -212,7 +284,7 @@ pub(crate) fn format_request(
                 .map(|t| GeminiFunctionDeclaration {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    parameters: t.parameters.clone(),
+                    parameters: sanitize_schema_for_gemini(&t.parameters),
                 })
                 .collect(),
         }])
@@ -573,6 +645,45 @@ mod tests {
         let gemini_tools = req.tools.unwrap();
         assert_eq!(gemini_tools.len(), 1);
         assert_eq!(gemini_tools[0].function_declarations[0].name, "search");
+    }
+
+    #[test]
+    fn test_tool_schema_strips_unsupported_fields() {
+        let tools = vec![ToolDefinition {
+            name: "calc".to_string(),
+            description: "Calculate".to_string(),
+            parameters: json!({
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "n": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "exclusiveMaximum": 100,
+                        "description": "a bounded number"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string", "pattern": "^x" }
+                    }
+                },
+                "required": ["n"]
+            }),
+        }];
+        let messages = vec![user_msg("go")];
+        let req = format_request(&messages, &tools, &default_config(), None);
+        let params = &req.tools.unwrap()[0].function_declarations[0].parameters;
+
+        assert!(params.get("$schema").is_none());
+        assert!(params.get("additionalProperties").is_none());
+        let n = &params["properties"]["n"];
+        assert!(n.get("exclusiveMinimum").is_none());
+        assert!(n.get("exclusiveMaximum").is_none());
+        assert_eq!(n["type"], "integer");
+        assert_eq!(n["description"], "a bounded number");
+        assert_eq!(params["properties"]["tags"]["items"]["type"], "string");
+        assert_eq!(params["required"][0], "n");
     }
 
     #[test]
