@@ -52,9 +52,7 @@ use serde_json::Value;
 use crate::models::ToolResult;
 use crate::tool::Tool;
 
-pub use fs::{
-    EditFileTool, ListDirTool, PatchFileTool, ReadFileTool, SearchTool, WriteFileTool,
-};
+pub use fs::{EditFileTool, ListDirTool, PatchFileTool, ReadFileTool, SearchTool, WriteFileTool};
 pub use policy::{
     DEFAULT_USER_AGENT, ToolPolicy, WebFormat, WebPolicy, normalize_path, resolve_for_containment,
 };

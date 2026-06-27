@@ -278,7 +278,9 @@ fn render_html(html: &str, url: &str, format: WebFormat, raw: bool) -> String {
 /// don't leak CSS/JS or chrome.
 fn html_to_markdown(html: &str) -> std::io::Result<String> {
     htmd::HtmlToMarkdown::builder()
-        .skip_tags(vec!["script", "style", "head", "nav", "noscript", "iframe", "svg"])
+        .skip_tags(vec![
+            "script", "style", "head", "nav", "noscript", "iframe", "svg",
+        ])
         .build()
         .convert(html)
 }
@@ -361,9 +363,7 @@ async fn validate_target(
         .first()
         .ok_or_else(|| format!("Host '{host}' did not resolve to any address"))?;
 
-    if !allow_private_hosts
-        && let Some(private) = addrs.iter().find(|a| is_private_addr(&a.ip()))
-    {
+    if !allow_private_hosts && let Some(private) = addrs.iter().find(|a| is_private_addr(&a.ip())) {
         return Err(format!(
             "Refusing to fetch '{host}': it resolves to a private/internal address ({}). \
              Set allow_private_hosts for local development.",
@@ -443,9 +443,14 @@ mod tests {
             https_only: false,
             ..WebPolicy::default()
         };
-        let err = fetch_webpage("http://169.254.169.254/latest/meta-data/", &web, WebFormat::Markdown, false)
-            .await
-            .unwrap_err();
+        let err = fetch_webpage(
+            "http://169.254.169.254/latest/meta-data/",
+            &web,
+            WebFormat::Markdown,
+            false,
+        )
+        .await
+        .unwrap_err();
         assert!(err.contains("private/internal"));
     }
 
@@ -473,22 +478,42 @@ mod tests {
             "fc00::1",
             "fe80::1",
         ] {
-            assert!(is_private_addr(&ip.parse().unwrap()), "{ip} should be private");
+            assert!(
+                is_private_addr(&ip.parse().unwrap()),
+                "{ip} should be private"
+            );
         }
         for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
-            assert!(!is_private_addr(&ip.parse().unwrap()), "{ip} should be public");
+            assert!(
+                !is_private_addr(&ip.parse().unwrap()),
+                "{ip} should be public"
+            );
         }
     }
 
     #[test]
     fn render_body_handles_json_text_and_binary() {
-        let json = render_body(&fetched(br#"{"a":1}"#, Some("application/json")), WebFormat::Markdown, false).unwrap();
+        let json = render_body(
+            &fetched(br#"{"a":1}"#, Some("application/json")),
+            WebFormat::Markdown,
+            false,
+        )
+        .unwrap();
         assert!(json.contains("\"a\": 1"));
 
-        let text = render_body(&fetched(b"plain text", Some("text/plain")), WebFormat::Markdown, false).unwrap();
+        let text = render_body(
+            &fetched(b"plain text", Some("text/plain")),
+            WebFormat::Markdown,
+            false,
+        )
+        .unwrap();
         assert_eq!(text, "plain text");
 
-        let binary = render_body(&fetched(&[0, 1, 2], Some("image/png")), WebFormat::Markdown, false);
+        let binary = render_body(
+            &fetched(&[0, 1, 2], Some("image/png")),
+            WebFormat::Markdown,
+            false,
+        );
         assert!(binary.is_err());
     }
 

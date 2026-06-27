@@ -11,8 +11,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::{req_str, tool_error, tool_result};
 use super::policy::ToolPolicy;
+use super::{req_str, tool_error, tool_result};
 use crate::error::KovaError;
 use crate::models::ToolResult;
 use crate::tool::Tool;
@@ -321,7 +321,11 @@ fn search_dir(
                 continue;
             }
             let content = String::from_utf8_lossy(&bytes);
-            let display = path.strip_prefix(root).unwrap_or(&path).display().to_string();
+            let display = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .display()
+                .to_string();
             for (i, line) in content.lines().enumerate() {
                 if re.is_match(line) {
                     let mut text = line.trim_end().to_string();
@@ -630,7 +634,12 @@ mod tests {
             ..ToolPolicy::default()
         });
 
-        let sneaky = tmp.path().join("ok").join("..").join("config").join("config.yaml");
+        let sneaky = tmp
+            .path()
+            .join("ok")
+            .join("..")
+            .join("config")
+            .join("config.yaml");
         let tool = WriteFileTool::new(policy);
         let result = tool
             .execute(json!({ "path": sneaky.to_str().unwrap(), "content": "x" }))
@@ -651,7 +660,11 @@ mod tests {
             .execute(json!({ "path": inside.to_str().unwrap(), "content": "hi" }))
             .await
             .unwrap();
-        assert!(!ok.is_error, "inside workspace should be allowed: {}", ok.content);
+        assert!(
+            !ok.is_error,
+            "inside workspace should be allowed: {}",
+            ok.content
+        );
 
         let outside = tmp.path().join("outside.txt");
         let denied = tool

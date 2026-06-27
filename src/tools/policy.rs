@@ -266,9 +266,18 @@ mod tests {
 
     #[test]
     fn web_format_parse_falls_back() {
-        assert_eq!(WebFormat::parse(Some("text"), WebFormat::Markdown), WebFormat::Text);
-        assert_eq!(WebFormat::parse(Some("bogus"), WebFormat::Text), WebFormat::Text);
-        assert_eq!(WebFormat::parse(None, WebFormat::Markdown), WebFormat::Markdown);
+        assert_eq!(
+            WebFormat::parse(Some("text"), WebFormat::Markdown),
+            WebFormat::Text
+        );
+        assert_eq!(
+            WebFormat::parse(Some("bogus"), WebFormat::Text),
+            WebFormat::Text
+        );
+        assert_eq!(
+            WebFormat::parse(None, WebFormat::Markdown),
+            WebFormat::Markdown
+        );
     }
 
     #[cfg(feature = "web-tools")]
@@ -289,8 +298,20 @@ mod tests {
             denied_urls: vec![glob::Pattern::new("*/secret*").unwrap()],
             ..WebPolicy::default()
         };
-        assert!(policy.check_url(&reqwest::Url::parse("https://example.com/ok").unwrap()).is_ok());
-        assert!(policy.check_url(&reqwest::Url::parse("https://example.com/secret").unwrap()).is_err());
-        assert!(policy.check_url(&reqwest::Url::parse("https://other.com/ok").unwrap()).is_err());
+        assert!(
+            policy
+                .check_url(&reqwest::Url::parse("https://example.com/ok").unwrap())
+                .is_ok()
+        );
+        assert!(
+            policy
+                .check_url(&reqwest::Url::parse("https://example.com/secret").unwrap())
+                .is_err()
+        );
+        assert!(
+            policy
+                .check_url(&reqwest::Url::parse("https://other.com/ok").unwrap())
+                .is_err()
+        );
     }
 }

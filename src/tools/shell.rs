@@ -118,7 +118,10 @@ mod tests {
     #[tokio::test]
     async fn shell_echo_and_exit_code() {
         let tool = ShellTool::new(Arc::new(ToolPolicy::default()));
-        let ok = tool.execute(json!({ "command": "echo hello" })).await.unwrap();
+        let ok = tool
+            .execute(json!({ "command": "echo hello" }))
+            .await
+            .unwrap();
         assert!(!ok.is_error);
         assert!(ok.content.contains("hello"));
         assert!(ok.content.contains("exit_code: 0"));
