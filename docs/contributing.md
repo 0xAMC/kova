@@ -48,6 +48,26 @@ AgentBuilder::new().provider(p).tool(Arc::new(MyTool)).build()?;
 registry.register(Arc::new(MyTool)).await;
 ```
 
+### Built-in tools (`src/tools/`)
+
+The crate ships ready-made filesystem, shell, and web tools behind the `tools`
+and `web-tools` features (off by default). When adding or changing one:
+
+- **Keep tools config-agnostic.** Every runtime constraint is injected through
+  `ToolPolicy` — tools must not read host configuration or environment-specific
+  state directly. A host maps its own config onto `ToolPolicy`/`WebPolicy`, never
+  the reverse. This is what lets the SDK ship the tools without depending on any
+  downstream crate's config types.
+- **Place new tools by weight.** Light deps go in `tools` (`fs.rs`/`shell.rs`);
+  anything pulling a heavy dependency tree (HTML parsing, etc.) goes behind
+  `web-tools` and is `push`ed conditionally in `register_all_tools_with_policy`.
+- **Report tool failures in-band** as `tool_error(...)` results (so the model can
+  recover), reserving `Err(KovaError)` for genuine transport faults.
+- **Respect the security boundary.** Filesystem tools resolve paths through
+  `ToolPolicy::resolve_arg_path` and check containment with
+  `resolve_for_containment`; web tools must route through the SSRF validation in
+  `web.rs` (never build an unpinned client). Add tests alongside the tool.
+
 ## Running Tests
 
 ```bash
@@ -95,5 +115,9 @@ cargo test -p kova-sdk property
 | Flag | Default | Effect |
 |------|---------|--------|
 | `telemetry` | off | Enables OTEL crates; `TelemetryConfig` uses a full pipeline |
+| `tools` | off | Built-in filesystem + shell tools (`glob`, `regex`, `diffy`) |
+| `web-tools` | off | Adds `fetch_webpage` + the `fetch_text` SSRF-guarded HTTP helper (`scraper`, `dom_smoothie`, `htmd`, `tokio/net`); implies `tools` |
 
-Keep the `telemetry` feature flag in mind when adding new dependencies — OTEL crates are heavy and should not be compiled for users who don't need them.
+Keep the feature flags in mind when adding new dependencies — OTEL crates and the
+web-tool HTML stack are heavy and should not be compiled for users who don't need
+them. Run `cargo test --features web-tools` to exercise the tool suite.

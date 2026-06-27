@@ -8,6 +8,8 @@ pub mod provider;
 pub mod streaming;
 pub mod telemetry;
 pub mod tool;
+#[cfg(feature = "tools")]
+pub mod tools;
 
 pub use tool::ToolLifecycleHook;
 pub use tool::approval::{ApprovalDecision, ToolApprovalHandler};
