@@ -2,6 +2,17 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
+## 0.4.0 — Built-in tools
+
+### Added
+- **Built-in tools** (`kova_sdk::tools`), opt-in behind two feature flags so the core stays dependency-light:
+  - `tools` — filesystem and shell tools: `read_file`, `list_dir`, `search` (regex + glob), `edit_file`, `write_file`, `patch_file` (unified diff), and `shell`. Light deps (`glob`, `regex`, `diffy`).
+  - `web-tools` (implies `tools`) — `fetch_webpage` (readability extraction → Markdown/text, content-type dispatch) plus `tools::fetch_text`, a public SSRF-guarded HTTP-GET helper for building further network tools against trusted endpoints. Adds `scraper`/`dom_smoothie`/`htmd` and enables `tokio/net`.
+- `ToolPolicy` / `WebPolicy` — injected, config-agnostic guardrails. `ToolPolicy` confines filesystem reads/writes to a `workspace_root`, blocks `protected_paths`, and bounds `shell_timeout`; `WebPolicy::default()` owns safe network defaults (HTTPS-only, no private hosts, response/content caps). Hosts map their own config onto these structs — the tools never read host configuration.
+- `register_all_tools()` / `register_all_tools_with_policy(Arc<ToolPolicy>)` — build the full tool set (web tools included only under `web-tools`).
+- `tools::tool_result` / `tools::tool_error` helpers, and `tools::normalize_path` / `tools::resolve_for_containment` (symlink-aware path containment).
+- **SSRF defense** in the web tools: hostnames resolving to loopback/private/link-local/CGNAT addresses are rejected (unless `allow_private_hosts`), the HTTP client is pinned to the validated IP to defeat DNS rebinding, and redirects are followed manually with every guardrail re-checked per hop.
+
 ## 0.3.0 - Stateless agent loop
 
 ### Added

@@ -29,6 +29,7 @@ kova
 ├── agent        # Agent + AgentBuilder — the main orchestration loop
 ├── provider     # LlmProvider trait + OpenAI / Bedrock / Gemini / Ollama implementations
 ├── tool         # Tool trait + thread-safe ToolRegistry
+├── tools        # Built-in fs/shell/web tools (feature `tools` / `web-tools`)
 ├── memory       # MemoryStore trait + InMemoryStore
 ├── mcp          # MCP client (stdio / HTTP+SSE) + McpTool adapter
 ├── orchestrator # Multi-agent patterns (sequential, parallel, router)
@@ -120,6 +121,8 @@ via `AgentBuilder::retry_config(RetryConfig { .. })`.
 | `ollama` | on | Ollama provider |
 | `bedrock` | on | AWS Bedrock provider (pulls in the AWS SDK crates) |
 | `telemetry` | off | Adds OpenTelemetry dependencies; enables OTLP/Jaeger/stdout span export |
+| `tools` | off | Built-in filesystem and shell tools (`read_file`, `list_dir`, `search`, `edit_file`, `write_file`, `patch_file`, `shell`) |
+| `web-tools` | off | Adds the `fetch_webpage` tool and the SSRF-guarded `fetch_text` helper (for building further network tools); pulls in an HTML parser and readability extraction. Implies `tools` |
 
 Skip the AWS dependency tree entirely if you don't need Bedrock:
 
@@ -129,6 +132,29 @@ kova-sdk = { version = "0.3", default-features = false, features = ["openai"] }
 ```
 
 Without the `telemetry` feature, `TelemetryConfig::init()` installs a lightweight `tracing_subscriber` — zero OTEL overhead.
+
+The built-in tools are opt-in to keep the core dependency-light. Enable them and register against an injected [`ToolPolicy`](https://docs.rs/kova-sdk/latest/kova_sdk/tools/struct.ToolPolicy.html) that confines filesystem access and guards the web tools against SSRF:
+
+```toml
+[dependencies]
+kova-sdk = { version = "0.3", features = ["web-tools"] }
+```
+
+```rust
+use std::sync::Arc;
+use kova_sdk::tools::{ToolPolicy, register_all_tools_with_policy};
+
+let policy = Arc::new(ToolPolicy {
+    workspace_root: Some("/srv/project".into()),
+    ..ToolPolicy::default()
+});
+
+let mut builder = AgentBuilder::new().provider(provider);
+for tool in register_all_tools_with_policy(policy) {
+    builder = builder.tool(tool);
+}
+let agent = builder.build()?;
+```
 
 ## Documentation
 

@@ -1,6 +1,6 @@
 [package]
 name = "kova-sdk"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "Async-first Rust library for building LLM-powered agents with tool calling, streaming, MCP, and multi-agent orchestration"
 license = "Apache-2.0"
@@ -31,11 +31,25 @@ aws-smithy-eventstream = { version = "0.60.20", optional = true }
 aws-smithy-types = { version = "1.4", optional = true }
 http = { version = "1.4", optional = true }
 
+# Built-in tools (opt-in to keep the core dependency-light).
+glob = { version = "0.3", optional = true }
+regex = { version = "1", optional = true }
+diffy = { version = "0.3", optional = true }
+scraper = { version = "0.21", optional = true }
+dom_smoothie = { version = "0.18", optional = true }
+htmd = { version = "0.5", optional = true }
+
 [features]
 default = ["openai", "gemini", "ollama", "bedrock"]
 openai = []
 gemini = []
 ollama = []
+# Filesystem and shell tools (read_file, list_dir, search, edit_file,
+# write_file, patch_file, shell). Light dependencies only.
+tools = ["dep:glob", "dep:regex", "dep:diffy"]
+# Network tools (fetch_webpage, web_search). Pulls in an HTML parser and
+# readability extraction; enables tokio's DNS resolver for SSRF guarding.
+web-tools = ["tools", "dep:scraper", "dep:dom_smoothie", "dep:htmd", "tokio/net"]
 bedrock = [
     "dep:aws-sigv4",
     "dep:aws-credential-types",
@@ -78,5 +92,6 @@ optional = true
 proptest = "1.11"
 wiremock = "0.6.5"
 tokio-test = "0.4.5"
+tempfile = "3"
 tracing-test = { version = "0.2.6", features = ["no-env-filter"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"] }
