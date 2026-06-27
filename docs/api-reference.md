@@ -320,6 +320,57 @@ let names = registry.list().await;                        // Vec<String>
 let defs  = registry.tool_definitions().await;           // Vec<ToolDefinition> for the LLM
 ```
 
+### Built-in Tools (`tools` / `web-tools` features)
+
+`kova_sdk::tools` ships ready-made tools. Enable the feature and register them
+against an injected `ToolPolicy`:
+
+```toml
+kova-sdk = { version = "0.3", features = ["web-tools"] }
+```
+
+| Feature | Tools |
+|---------|-------|
+| `tools` | `read_file`, `list_dir`, `search`, `edit_file`, `write_file`, `patch_file`, `shell` |
+| `web-tools` (implies `tools`) | adds `fetch_webpage` and the `fetch_text` SSRF-guarded HTTP helper |
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+use kova_sdk::tools::{ToolPolicy, WebPolicy, register_all_tools_with_policy};
+
+let policy = Arc::new(ToolPolicy {
+    workspace_root: Some("/srv/project".into()), // file tools confined here; shell runs here
+    protected_paths: vec!["/srv/project/.secrets".into()], // never read/written
+    shell_timeout: Duration::from_secs(60),
+    web: WebPolicy::default(),                    // HTTPS-only, no private hosts, capped
+});
+
+let mut builder = AgentBuilder::new().provider(provider);
+for tool in register_all_tools_with_policy(policy) {
+    builder = builder.tool(tool);
+}
+let agent = builder.build()?;
+```
+
+`register_all_tools()` is a shorthand that uses `ToolPolicy::default()` (unconfined
+— suitable only for trusted, non-interactive use).
+
+**Policy fields**
+
+| Field | Effect |
+|-------|--------|
+| `workspace_root: Option<PathBuf>` | Confines file reads/writes; relative paths resolve here; `shell` cwd. `None` = unconfined |
+| `protected_paths: Vec<PathBuf>` | Directories the file tools may never touch (host config, secrets) |
+| `shell_timeout: Duration` | Wall-clock cap per `shell` call; the child is killed on expiry |
+| `web: WebPolicy` | `allow_private_hosts`, `https_only`, `allowed_urls`/`denied_urls` globs, byte/char caps, `default_format`, `user_agent` |
+
+The tools are **config-agnostic**: all constraints come from `ToolPolicy`, so a
+host maps its own configuration onto these structs rather than the tools reaching
+into host state. The web tools guard against SSRF (private-address rejection +
+DNS-pinned client) and confine output size; the file tools reject paths that
+escape `workspace_root` via `..` or symlinks.
+
 ## Memory
 
 ```rust

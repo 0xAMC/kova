@@ -84,6 +84,25 @@ Clone of a `ToolRegistry` shares the same inner `Arc` — all clones see the sam
 
 Concurrent execution uses `tokio::sync::Semaphore` to cap parallelism. Tool results are collected with `futures::future::join_all` and stored in order.
 
+### Built-in tools (`src/tools/`, feature-gated)
+
+The crate ships generic filesystem, shell, and web tools behind the `tools` /
+`web-tools` features. They are **decoupled from any host application**: every
+runtime constraint is injected through a `ToolPolicy`, and the tools never read
+configuration or environment-specific state themselves. This is a deliberate
+dependency-inversion boundary — `WebPolicy::default()` owns the safe defaults in
+the SDK, and an embedder maps *its* configuration onto `ToolPolicy`/`WebPolicy`,
+so the SDK takes no dependency on any downstream config types. The two-tier
+feature split keeps the heavy HTML/readability stack out of builds that only need
+the light filesystem/shell tools.
+
+Security boundaries live with the tools that need them: filesystem tools resolve
+and contain paths through `resolve_for_containment` (canonicalizing the deepest
+existing ancestor, so `..` and symlink escapes fail a `starts_with` check), and
+the web tools defend against SSRF by rejecting private/internal addresses and
+pinning the HTTP client to the validated IP. Tool failures are surfaced in-band
+as error `ToolResult`s so the model can recover, not as transport `KovaError`s.
+
 ## InferenceConfig
 
 `InferenceConfig { model, max_tokens, temperature }` controls LLM call parameters. It is stored on `Agent` as a field (set via `AgentBuilder::inference_config(cfg)`) and cloned into each provider call inside the agentic loop. This replaces the earlier pattern of constructing `InferenceConfig::default()` inline on every iteration.
