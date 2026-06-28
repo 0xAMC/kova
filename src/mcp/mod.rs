@@ -1,5 +1,6 @@
 pub mod tool;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,9 +18,20 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone)]
 pub enum McpTransport {
     /// Spawn a child process and communicate via stdin/stdout.
-    Stdio { command: String, args: Vec<String> },
+    Stdio {
+        command: String,
+        args: Vec<String>,
+        /// Extra environment variables set on the spawned process, on top of
+        /// the parent environment. Empty for servers that need no configuration.
+        env: HashMap<String, String>,
+    },
     /// Connect to an MCP server over HTTP+SSE (URL endpoint).
-    HttpSse { url: String },
+    HttpSse {
+        url: String,
+        /// Extra HTTP headers sent with every request (e.g. `Authorization`).
+        /// Empty for servers that need no headers.
+        headers: HashMap<String, String>,
+    },
 }
 
 /// A tool definition as returned by the MCP `tools/list` method.
@@ -99,6 +111,8 @@ struct StdioConnection {
 struct HttpConnection {
     base_url: String,
     client: reqwest::Client,
+    /// Extra headers applied to every request to this server.
+    headers: HashMap<String, String>,
     next_id: u64,
 }
 
@@ -137,9 +151,10 @@ impl McpClient {
         request_timeout: Duration,
     ) -> Result<Self, KovaError> {
         let connection = match transport {
-            McpTransport::Stdio { command, args } => {
+            McpTransport::Stdio { command, args, env } => {
                 let mut child = tokio::process::Command::new(&command)
                     .args(&args)
+                    .envs(&env)
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
@@ -181,7 +196,7 @@ impl McpClient {
                     .map_err(|_| KovaError::Timeout(request_timeout))??;
                 McpConnection::Stdio(Box::new(locked))
             }
-            McpTransport::HttpSse { url } => {
+            McpTransport::HttpSse { url, headers } => {
                 let client = reqwest::Client::builder()
                     .timeout(request_timeout)
                     .build()
@@ -189,6 +204,7 @@ impl McpClient {
                 let conn = HttpConnection {
                     base_url: url.trim_end_matches('/').to_string(),
                     client,
+                    headers,
                     next_id: 1,
                 };
                 McpConnection::Http(conn)
@@ -376,9 +392,11 @@ impl McpClient {
             params,
         };
 
-        let resp = conn
-            .client
-            .post(&conn.base_url)
+        let mut builder = conn.client.post(&conn.base_url);
+        for (key, value) in &conn.headers {
+            builder = builder.header(key, value);
+        }
+        let resp = builder
             .json(&request)
             .send()
             .await
@@ -418,6 +436,7 @@ impl McpClient {
             connection: Arc::new(Mutex::new(McpConnection::Http(HttpConnection {
                 base_url: "http://localhost:0".to_string(),
                 client: reqwest::Client::new(),
+                headers: HashMap::new(),
                 next_id: 1,
             }))),
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
@@ -563,5 +582,90 @@ mod tests {
             .filter_map(|c| c.text.as_deref())
             .collect();
         assert_eq!(texts, vec!["line 1", "line 2"]);
+    }
+
+    /// HTTP transport headers are attached to every JSON-RPC request, so bearer
+    /// tokens and similar credentials reach the server.
+    #[tokio::test]
+    async fn http_transport_sends_configured_headers() {
+        use wiremock::matchers::{header, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer secret-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": { "tools": [{ "name": "ping" }] }
+            })))
+            .mount(&server)
+            .await;
+
+        let mut headers = HashMap::new();
+        headers.insert(
+            "Authorization".to_string(),
+            "Bearer secret-token".to_string(),
+        );
+        let client = McpClient::connect(McpTransport::HttpSse {
+            url: server.uri(),
+            headers,
+        })
+        .await
+        .expect("connect");
+
+        // tools/list only succeeds if the Authorization header matched the mock.
+        let tools = client.tools_list().await.expect("tools_list");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "ping");
+    }
+
+    /// stdio transport environment variables reach the spawned child process.
+    /// Uses an unbuffered python MCP stub that echoes an env var as a tool name;
+    /// skipped when python3 is unavailable so CI without it stays green.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_transport_passes_env_to_child() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+
+        // Minimal MCP stdio server: reply to `initialize` and `tools/list`,
+        // naming the single tool after $MCP_TEST_TOOL so the test can prove the
+        // env var was inherited by the child.
+        let stub = r#"
+import sys, json, os
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":{}}), flush=True)
+    elif method == "tools/list":
+        name = os.environ.get("MCP_TEST_TOOL", "missing")
+        print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":{"tools":[{"name":name}]}}), flush=True)
+"#;
+
+        let mut env = HashMap::new();
+        env.insert("MCP_TEST_TOOL".to_string(), "from_env".to_string());
+        let client = McpClient::connect(McpTransport::Stdio {
+            command: "python3".to_string(),
+            args: vec!["-u".to_string(), "-c".to_string(), stub.to_string()],
+            env,
+        })
+        .await
+        .expect("connect");
+
+        let tools = client.tools_list().await.expect("tools_list");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "from_env");
     }
 }
