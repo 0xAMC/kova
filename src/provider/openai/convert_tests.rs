@@ -46,6 +46,7 @@ fn sample_oai_response() -> OaiChatCompletionResponse {
             prompt_tokens: 5,
             completion_tokens: 3,
             total_tokens: 8,
+            completion_tokens_details: None,
         }),
     }
 }

@@ -82,6 +82,15 @@ pub(crate) struct OaiUsage {
     pub(crate) prompt_tokens: u32,
     pub(crate) completion_tokens: u32,
     pub(crate) total_tokens: u32,
+    /// Present for o-series reasoning models; carries `reasoning_tokens`.
+    #[serde(default)]
+    pub(crate) completion_tokens_details: Option<OaiCompletionTokensDetails>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct OaiCompletionTokensDetails {
+    #[serde(default)]
+    pub(crate) reasoning_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

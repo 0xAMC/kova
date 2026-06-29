@@ -59,6 +59,7 @@ fn arb_usage_stats() -> impl Strategy<Value = UsageStats> {
         input_tokens,
         output_tokens,
         total_tokens: input_tokens.saturating_add(output_tokens),
+        thinking_tokens: None,
     })
 }
 
