@@ -393,7 +393,8 @@ mod tests {
             e,
             StreamEvent::UsageEvent {
                 input_tokens: 5,
-                output_tokens: 3
+                output_tokens: 3,
+                ..
             }
         )));
     }

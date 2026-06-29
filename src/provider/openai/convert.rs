@@ -174,6 +174,10 @@ pub(crate) fn format_response(
         input_tokens: u.prompt_tokens,
         output_tokens: u.completion_tokens,
         total_tokens: u.total_tokens,
+        thinking_tokens: u
+            .completion_tokens_details
+            .as_ref()
+            .map(|d| d.reasoning_tokens),
     });
 
     Ok(ModelResponse {
@@ -203,6 +207,10 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
         events.push(StreamEvent::UsageEvent {
             input_tokens: usage.prompt_tokens,
             output_tokens: usage.completion_tokens,
+            thinking_tokens: usage
+                .completion_tokens_details
+                .as_ref()
+                .map(|d| d.reasoning_tokens),
         });
     }
 

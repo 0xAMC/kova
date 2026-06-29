@@ -134,6 +134,9 @@ pub(crate) struct GeminiUsageMetadata {
     pub(crate) candidates_token_count: u32,
     #[serde(default)]
     pub(crate) total_token_count: u32,
+    /// Reasoning tokens for thinking-capable models; absent otherwise.
+    #[serde(default)]
+    pub(crate) thoughts_token_count: Option<u32>,
 }
 
 // ── Model list ─────────────────────────────────────────────────────

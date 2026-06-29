@@ -388,6 +388,7 @@ pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelRespon
         input_tokens: u.prompt_token_count,
         output_tokens: u.candidates_token_count,
         total_tokens: u.total_token_count,
+        thinking_tokens: u.thoughts_token_count,
     });
 
     let thinking = if thinking_parts.is_empty() {
@@ -420,6 +421,7 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
         events.push(StreamEvent::UsageEvent {
             input_tokens: usage.prompt_token_count,
             output_tokens,
+            thinking_tokens: usage.thoughts_token_count,
         });
     }
 
@@ -852,6 +854,7 @@ mod tests {
                 prompt_token_count: 10,
                 candidates_token_count: 5,
                 total_token_count: 15,
+                thoughts_token_count: Some(4),
             }),
         };
         let model_resp = format_response(resp).unwrap();
@@ -859,6 +862,7 @@ mod tests {
         assert_eq!(usage.input_tokens, 10);
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.total_tokens, 15);
+        assert_eq!(usage.thinking_tokens, Some(4));
     }
 
     // ── Thinking / thought part tests ──────────────────────────────
