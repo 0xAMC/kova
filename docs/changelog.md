@@ -2,6 +2,21 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
+## 0.6.0 — Thinking-token accounting
+
+### Added
+- `UsageStats::thinking_tokens: Option<u32>` — reasoning/thinking token count when the provider reports it separately. It is a *subset* of `output_tokens` (not additive). `None` means the provider gives no separate count, surfaced as "unknown" rather than a misleading `0`. Aggregated across all provider calls in a turn: `None + None` stays `None`, any reported value makes the running total `Some`.
+- `StreamEvent::UsageEvent::thinking_tokens: Option<u32>` — reasoning tokens carried on streaming usage events, mirrored onto `UsageStats::thinking_tokens`.
+
+### Changed
+- Providers that report reasoning tokens now surface them: **OpenAI** (o-series, via `completion_tokens_details.reasoning_tokens`) and **Gemini** (`thoughtsTokenCount`). **Bedrock** and **Ollama** fold reasoning into `output_tokens` and report `thinking_tokens: None`.
+
+## 0.5.0 — MCP server configuration
+
+### Added
+- `McpTransport::Stdio { env: HashMap<String, String> }` — extra environment variables set on the spawned MCP server process, on top of the inherited parent environment.
+- `McpTransport::HttpSse { headers: HashMap<String, String> }` — extra HTTP headers sent with every JSON-RPC request to an HTTP+SSE MCP server (e.g. `Authorization` bearer tokens).
+
 ## 0.4.0 — Built-in tools
 
 ### Added
