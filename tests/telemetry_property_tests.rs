@@ -108,6 +108,7 @@ fn make_text_response(text: &str) -> ModelResponse {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
+            thinking_tokens: None,
         }),
         thinking: None,
     }
@@ -130,6 +131,7 @@ fn make_tool_call_response(calls: Vec<(&str, &str)>) -> ModelResponse {
             input_tokens: 8,
             output_tokens: 3,
             total_tokens: 11,
+            thinking_tokens: None,
         }),
         thinking: None,
     }

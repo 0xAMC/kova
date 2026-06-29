@@ -201,6 +201,7 @@ impl Agent {
                 input_tokens: 0,
                 output_tokens: 0,
                 total_tokens: 0,
+            thinking_tokens: None,
             };
             for iteration in 0..=self.max_iterations {
                 let llm_calls = iteration as u64 + 1;
@@ -252,9 +253,11 @@ impl Agent {
                             StreamEvent::UsageEvent {
                                 input_tokens,
                                 output_tokens,
+                                thinking_tokens,
                             } => {
                                 acc.input_tokens = Some(*input_tokens);
                                 acc.output_tokens = Some(*output_tokens);
+                                acc.thinking_tokens = *thinking_tokens;
                             }
                             StreamEvent::Error { message } => {
                                 if let Some(m) = &self.metrics {
@@ -289,6 +292,7 @@ impl Agent {
                         output_tokens: acc.output_tokens.unwrap_or(0),
                         total_tokens: acc.input_tokens.unwrap_or(0)
                             + acc.output_tokens.unwrap_or(0),
+                        thinking_tokens: acc.thinking_tokens,
                     }),
                 );
 
@@ -479,6 +483,7 @@ impl Agent {
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            thinking_tokens: None,
         };
 
         let mut response = self
@@ -566,6 +571,7 @@ impl Agent {
             input_tokens: 0,
             output_tokens: 0,
             total_tokens: 0,
+            thinking_tokens: None,
         };
 
         let mut llm_calls: u64 = 0;
@@ -639,6 +645,7 @@ impl Agent {
                         output_tokens: accumulated.output_tokens.unwrap_or(0),
                         total_tokens: accumulated.input_tokens.unwrap_or(0)
                             + accumulated.output_tokens.unwrap_or(0),
+                        thinking_tokens: accumulated.thinking_tokens,
                     }),
                 );
             }
@@ -819,6 +826,12 @@ impl Agent {
             acc.input_tokens += u.input_tokens;
             acc.output_tokens += u.output_tokens;
             acc.total_tokens += u.total_tokens;
+            // `None` from both sides stays `None` ("unknown"); any reported
+            // value makes the running total `Some` and adds in.
+            if acc.thinking_tokens.is_some() || u.thinking_tokens.is_some() {
+                acc.thinking_tokens =
+                    Some(acc.thinking_tokens.unwrap_or(0) + u.thinking_tokens.unwrap_or(0));
+            }
         }
     }
 
@@ -1073,9 +1086,11 @@ impl Agent {
                         StreamEvent::UsageEvent {
                             input_tokens,
                             output_tokens,
+                            thinking_tokens,
                         } => {
                             acc.input_tokens = Some(*input_tokens);
                             acc.output_tokens = Some(*output_tokens);
+                            acc.thinking_tokens = *thinking_tokens;
                         }
                         StreamEvent::ThinkingDelta { .. } => {}
                         StreamEvent::Error { message } => {
@@ -1121,6 +1136,7 @@ struct StreamAccumulator {
     stop_reason: StopReason,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
+    thinking_tokens: Option<u32>,
 }
 
 impl Default for StreamAccumulator {
@@ -1131,6 +1147,7 @@ impl Default for StreamAccumulator {
             stop_reason: StopReason::EndTurn,
             input_tokens: None,
             output_tokens: None,
+            thinking_tokens: None,
         }
     }
 }

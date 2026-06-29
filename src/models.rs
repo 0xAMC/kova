@@ -72,6 +72,12 @@ pub struct UsageStats {
     pub input_tokens: u32,
     pub output_tokens: u32,
     pub total_tokens: u32,
+    /// Reasoning/thinking tokens, when the provider reports them separately
+    /// (OpenAI o-series, Gemini). These are a *subset* of `output_tokens`, not
+    /// additive. `None` means the provider gives no separate count (Anthropic,
+    /// Bedrock, Ollama) — surfaced as "unknown" rather than a misleading `0`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_tokens: Option<u32>,
 }
 
 // ── Model Response ─────────────────────────────────────────────────
@@ -135,6 +141,10 @@ pub enum StreamEvent {
     UsageEvent {
         input_tokens: u32,
         output_tokens: u32,
+        /// Reasoning tokens when the provider reports them; `None` otherwise.
+        /// A subset of `output_tokens`, mirrored onto [`UsageStats::thinking_tokens`].
+        #[serde(default)]
+        thinking_tokens: Option<u32>,
     },
     Error {
         message: String,

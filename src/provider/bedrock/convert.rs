@@ -170,6 +170,8 @@ pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResp
         input_tokens: resp.usage.input_tokens,
         output_tokens: resp.usage.output_tokens,
         total_tokens: resp.usage.total_tokens,
+        // Bedrock folds reasoning into output_tokens; no separate count.
+        thinking_tokens: None,
     };
 
     Ok(ModelResponse {
@@ -243,6 +245,7 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
         BedrockStreamEvent::Metadata { usage } => Some(StreamEvent::UsageEvent {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
+            thinking_tokens: None,
         }),
     }
 }
