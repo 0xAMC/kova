@@ -121,6 +121,8 @@ MCP tools are discovered at build time (via `AgentBuilder::mcp_client`) and regi
 
 `McpClient` serialises all JSON-RPC calls through `Arc<Mutex<McpConnection>>`, since the MCP spec requires ordered request/response pairs over a single connection.
 
+Three transports are supported via `McpTransport`: `Stdio` (subprocess), `HttpSse` (legacy static-header HTTP), and `StreamableHttp` (the MCP 2025 transport — `initialize` handshake, `Mcp-Session-Id` tracking, JSON-or-SSE responses). Authentication is decoupled from the transport: `StreamableHttp` accepts an optional `TokenProvider`, and kova attaches the bearer token and retries once on `401` after calling `refresh()`. kova holds no OAuth state — the host owns the flow and token storage.
+
 ## Orchestrator Design
 
 The `Orchestrator` holds a `HashMap<String, Arc<Agent>>`. Patterns reference agents by name (string keys). This decouples pattern configuration from agent construction and makes it easy to swap agents without rebuilding the orchestrator.
