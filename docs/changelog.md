@@ -2,6 +2,17 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
+## 0.7.0
+
+## Streamable HTTP transport + OAuth tokens
+
+### Added
+- `McpTransport::StreamableHttp { url, headers, auth }` — the MCP 2025 Streamable-HTTP transport. Unlike `HttpSse`, it performs the `initialize` / `notifications/initialized` handshake, tracks the server's `Mcp-Session-Id` and echoes it on every request, sends `Accept: application/json, text/event-stream`, and parses both plain-JSON and SSE (`event: message` / `data:`) responses.
+- `TokenProvider` trait (`async fn token()`, `async fn refresh()`) — a pluggable bearer-token source for `StreamableHttp`. The transport attaches `Authorization: Bearer <token()>` to each request and, on a `401`, calls `refresh()` once and retries. kova owns no OAuth logic; the host supplies tokens (e.g. via an OAuth flow + token store). `auth: Option<Arc<dyn TokenProvider>>` is `None` for unauthenticated servers.
+
+### Notes
+- Additive, backward-compatible: `Stdio` and `HttpSse` are unchanged. `HttpSse` remains the legacy static-header path (no `initialize` handshake); prefer `StreamableHttp` for modern remote servers.
+
 ## 0.6.0 — Thinking-token accounting
 
 ### Added

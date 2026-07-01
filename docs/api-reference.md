@@ -391,11 +391,20 @@ use kova_sdk::mcp::{McpClient, McpTransport};
 let client = Arc::new(McpClient::connect(McpTransport::Stdio {
     command: "npx".into(),
     args: vec!["-y".into(), "@modelcontextprotocol/server-filesystem".into()],
+    env: Default::default(),
 }).await?);
 
-// HTTP+SSE transport
+// HTTP+SSE transport (legacy: static headers, no initialize handshake)
 let client = Arc::new(McpClient::connect(McpTransport::HttpSse {
     url: "http://localhost:8080".into(),
+    headers: Default::default(),
+}).await?);
+
+// Streamable HTTP transport (MCP 2025: handshake, Mcp-Session-Id, JSON or SSE)
+let client = Arc::new(McpClient::connect(McpTransport::StreamableHttp {
+    url: "https://mcp.example.com/mcp".into(),
+    headers: Default::default(),
+    auth: None, // or Some(Arc::new(my_token_provider)) for OAuth
 }).await?);
 
 // Discover tools / call a tool directly
@@ -407,6 +416,23 @@ let agent = AgentBuilder::new()
     .provider(provider)
     .mcp_client(client, "my_server").await?
     .build()?;
+```
+
+### Authenticated transports (`TokenProvider`)
+
+`StreamableHttp` can carry a refreshable bearer token. Implement `TokenProvider`
+to supply it; the transport attaches `Authorization: Bearer <token()>` to each
+request and, on a `401`, calls `refresh()` once and retries. kova owns no OAuth
+logic — the host drives the flow and persists tokens.
+
+```rust
+use kova_sdk::mcp::TokenProvider;
+
+#[async_trait::async_trait]
+impl TokenProvider for MyTokenStore {
+    async fn token(&self) -> Result<String, KovaError> { /* current bearer */ }
+    async fn refresh(&self) -> Result<String, KovaError> { /* refresh + persist */ }
+}
 ```
 
 ## Streaming
