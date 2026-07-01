@@ -495,9 +495,7 @@ impl McpClient {
 
     /// Run the Streamable-HTTP handshake: `initialize` (capturing the
     /// `Mcp-Session-Id`) followed by the `notifications/initialized` message.
-    async fn streamable_initialize(
-        conn: &mut StreamableHttpConnection,
-    ) -> Result<(), KovaError> {
+    async fn streamable_initialize(conn: &mut StreamableHttpConnection) -> Result<(), KovaError> {
         let init_params = serde_json::json!({
             "protocolVersion": conn.protocol_version,
             "capabilities": {},
@@ -590,10 +588,10 @@ impl McpClient {
             Some(provider) => Some(provider.token().await?),
             None => None,
         };
-        let mut builder = conn
-            .client
-            .post(&conn.url)
-            .header(reqwest::header::ACCEPT, "application/json, text/event-stream");
+        let mut builder = conn.client.post(&conn.url).header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        );
         for (key, value) in &conn.headers {
             builder = builder.header(key, value);
         }
@@ -617,10 +615,10 @@ impl McpClient {
         request: &JsonRpcRequest,
         token: Option<&str>,
     ) -> Result<reqwest::Response, KovaError> {
-        let mut builder = conn
-            .client
-            .post(&conn.url)
-            .header(reqwest::header::ACCEPT, "application/json, text/event-stream");
+        let mut builder = conn.client.post(&conn.url).header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        );
         for (key, value) in &conn.headers {
             builder = builder.header(key, value);
         }
@@ -924,7 +922,9 @@ for line in sys.stdin:
         let server = MockServer::start().await;
         // initialize → returns a session id header.
         Mock::given(method("POST"))
-            .and(body_partial_json(serde_json::json!({ "method": "initialize" })))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "initialize" }),
+            ))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("Mcp-Session-Id", "sess-123")
@@ -945,7 +945,9 @@ for line in sys.stdin:
             .await;
         // tools/list only succeeds when the session id is echoed back.
         Mock::given(method("POST"))
-            .and(body_partial_json(serde_json::json!({ "method": "tools/list" })))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "tools/list" }),
+            ))
             .and(header("mcp-session-id", "sess-123"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "jsonrpc": "2.0", "id": 2,
@@ -975,7 +977,9 @@ for line in sys.stdin:
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(body_partial_json(serde_json::json!({ "method": "initialize" })))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "initialize" }),
+            ))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "jsonrpc": "2.0", "id": 1, "result": { "capabilities": {} }
             })))
@@ -991,7 +995,9 @@ for line in sys.stdin:
         // tools/list answered as an SSE frame.
         let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"sse_tool\"}]}}\n\n";
         Mock::given(method("POST"))
-            .and(body_partial_json(serde_json::json!({ "method": "tools/list" })))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "tools/list" }),
+            ))
             .respond_with(
                 ResponseTemplate::new(200).set_body_raw(sse.as_bytes(), "text/event-stream"),
             )
