@@ -14,6 +14,20 @@ use crate::error::KovaError;
 /// Default per-request timeout for MCP calls (handshake, tools/list, tools/call).
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Supplies (and refreshes) a bearer token for an authenticated transport.
+///
+/// The transport owns no OAuth logic: it calls [`token`](Self::token) before
+/// each request and, on a `401`, [`refresh`](Self::refresh) once before
+/// retrying. Implementations refresh lazily and persist their own state.
+#[async_trait::async_trait]
+pub trait TokenProvider: Send + Sync + std::fmt::Debug {
+    /// The current bearer token (without the `Bearer ` prefix).
+    async fn token(&self) -> Result<String, KovaError>;
+    /// Force a refresh after a rejected request; returns the new token or an
+    /// error if re-authentication is required.
+    async fn refresh(&self) -> Result<String, KovaError>;
+}
+
 /// MCP transport configuration.
 #[derive(Debug, Clone)]
 pub enum McpTransport {
@@ -26,11 +40,26 @@ pub enum McpTransport {
         env: HashMap<String, String>,
     },
     /// Connect to an MCP server over HTTP+SSE (URL endpoint).
+    ///
+    /// Legacy static-header transport: it POSTs JSON-RPC with fixed headers and
+    /// performs no `initialize` handshake. Use [`StreamableHttp`](Self::StreamableHttp)
+    /// for modern remote servers.
     HttpSse {
         url: String,
         /// Extra HTTP headers sent with every request (e.g. `Authorization`).
         /// Empty for servers that need no headers.
         headers: HashMap<String, String>,
+    },
+    /// Connect to an MCP server over Streamable HTTP (MCP 2025 spec): performs
+    /// the `initialize` handshake, tracks the `Mcp-Session-Id`, accepts both
+    /// `application/json` and `text/event-stream` responses, and optionally
+    /// attaches a refreshable bearer token.
+    StreamableHttp {
+        url: String,
+        /// Extra HTTP headers sent with every request.
+        headers: HashMap<String, String>,
+        /// Optional bearer-token provider for OAuth-authenticated servers.
+        auth: Option<Arc<dyn TokenProvider>>,
     },
 }
 
@@ -116,10 +145,25 @@ struct HttpConnection {
     next_id: u64,
 }
 
+/// Internal state for a Streamable-HTTP MCP connection.
+struct StreamableHttpConnection {
+    url: String,
+    client: reqwest::Client,
+    /// Extra static headers applied to every request to this server.
+    headers: HashMap<String, String>,
+    /// Optional refreshable bearer-token source.
+    auth: Option<Arc<dyn TokenProvider>>,
+    /// Session id echoed back on every request after `initialize`.
+    session_id: Option<String>,
+    protocol_version: String,
+    next_id: u64,
+}
+
 /// Active connection to an MCP server.
 enum McpConnection {
     Stdio(Box<StdioConnection>),
     Http(HttpConnection),
+    StreamableHttp(Box<StreamableHttpConnection>),
 }
 
 /// Client for communicating with an MCP (Model Context Protocol) server.
@@ -209,6 +253,26 @@ impl McpClient {
                 };
                 McpConnection::Http(conn)
             }
+            McpTransport::StreamableHttp { url, headers, auth } => {
+                let client = reqwest::Client::builder()
+                    .timeout(request_timeout)
+                    .build()
+                    .map_err(|e| KovaError::Mcp(format!("Failed to build MCP HTTP client: {e}")))?;
+                let mut conn = StreamableHttpConnection {
+                    url: url.trim_end_matches('/').to_string(),
+                    client,
+                    headers,
+                    auth,
+                    session_id: None,
+                    protocol_version: "2025-06-18".to_string(),
+                    next_id: 1,
+                };
+                // Handshake: initialize (captures Mcp-Session-Id) + initialized.
+                tokio::time::timeout(request_timeout, Self::streamable_initialize(&mut conn))
+                    .await
+                    .map_err(|_| KovaError::Timeout(request_timeout))??;
+                McpConnection::StreamableHttp(Box::new(conn))
+            }
         };
 
         Ok(Self {
@@ -276,6 +340,10 @@ impl McpClient {
         match conn {
             McpConnection::Stdio(stdio) => Self::send_stdio_request(stdio, method, params).await,
             McpConnection::Http(http) => Self::send_http_request(http, method, params).await,
+            McpConnection::StreamableHttp(s) => {
+                let (value, _session) = Self::streamable_send(s, method, params).await?;
+                Ok(value)
+            }
         }
     }
 
@@ -423,6 +491,179 @@ impl McpClient {
         rpc_resp
             .result
             .ok_or_else(|| KovaError::Mcp("MCP response missing result".into()))
+    }
+
+    /// Run the Streamable-HTTP handshake: `initialize` (capturing the
+    /// `Mcp-Session-Id`) followed by the `notifications/initialized` message.
+    async fn streamable_initialize(conn: &mut StreamableHttpConnection) -> Result<(), KovaError> {
+        let init_params = serde_json::json!({
+            "protocolVersion": conn.protocol_version,
+            "capabilities": {},
+            "clientInfo": { "name": "kova", "version": "0.1.0" }
+        });
+        let (_result, session_id) =
+            Self::streamable_send(conn, "initialize", Some(init_params)).await?;
+        if session_id.is_some() {
+            conn.session_id = session_id;
+        }
+        Self::streamable_notify(conn, "notifications/initialized").await
+    }
+
+    /// POST a JSON-RPC request over Streamable HTTP, returning the result value
+    /// and any `Mcp-Session-Id` returned by the server. Refreshes the bearer
+    /// token and retries once on a `401`.
+    async fn streamable_send(
+        conn: &mut StreamableHttpConnection,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<(serde_json::Value, Option<String>), KovaError> {
+        let id = conn.next_id;
+        conn.next_id += 1;
+        let request = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id,
+            method: method.to_string(),
+            params,
+        };
+
+        let token = match &conn.auth {
+            Some(provider) => Some(provider.token().await?),
+            None => None,
+        };
+        let mut resp = Self::streamable_post(conn, &request, token.as_deref()).await?;
+
+        // One refresh-and-retry on an expired/revoked token.
+        if resp.status().as_u16() == 401
+            && let Some(provider) = &conn.auth
+        {
+            let fresh = provider.refresh().await?;
+            resp = Self::streamable_post(conn, &request, Some(&fresh)).await?;
+        }
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(KovaError::Mcp(format!("MCP HTTP error {status}: {body}")));
+        }
+
+        let session_id = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let is_sse = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|ct| ct.contains("text/event-stream"))
+            .unwrap_or(false);
+
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| KovaError::Mcp(format!("Failed to read MCP HTTP response: {e}")))?;
+
+        let value = if is_sse {
+            Self::parse_sse_result(&body, id)?
+        } else {
+            let rpc: JsonRpcResponse = serde_json::from_str(&body)
+                .map_err(|e| KovaError::Mcp(format!("Failed to parse MCP HTTP response: {e}")))?;
+            if let Some(err) = rpc.error {
+                return Err(KovaError::Mcp(format!("MCP error: {}", err.message)));
+            }
+            rpc.result
+                .ok_or_else(|| KovaError::Mcp("MCP response missing result".into()))?
+        };
+
+        Ok((value, session_id))
+    }
+
+    /// Send a fire-and-forget JSON-RPC notification (no id, no response body).
+    async fn streamable_notify(
+        conn: &StreamableHttpConnection,
+        method: &str,
+    ) -> Result<(), KovaError> {
+        let notification = serde_json::json!({ "jsonrpc": "2.0", "method": method });
+        let token = match &conn.auth {
+            Some(provider) => Some(provider.token().await?),
+            None => None,
+        };
+        let mut builder = conn.client.post(&conn.url).header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        );
+        for (key, value) in &conn.headers {
+            builder = builder.header(key, value);
+        }
+        if let Some(sid) = &conn.session_id {
+            builder = builder.header("Mcp-Session-Id", sid);
+        }
+        if let Some(t) = &token {
+            builder = builder.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        builder
+            .json(&notification)
+            .send()
+            .await
+            .map_err(|e| KovaError::Mcp(format!("HTTP notify to MCP server failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Build and send one Streamable-HTTP POST with the given bearer token.
+    async fn streamable_post(
+        conn: &StreamableHttpConnection,
+        request: &JsonRpcRequest,
+        token: Option<&str>,
+    ) -> Result<reqwest::Response, KovaError> {
+        let mut builder = conn.client.post(&conn.url).header(
+            reqwest::header::ACCEPT,
+            "application/json, text/event-stream",
+        );
+        for (key, value) in &conn.headers {
+            builder = builder.header(key, value);
+        }
+        if let Some(sid) = &conn.session_id {
+            builder = builder.header("Mcp-Session-Id", sid);
+        }
+        if let Some(t) = token {
+            builder = builder.header(reqwest::header::AUTHORIZATION, format!("Bearer {t}"));
+        }
+        builder
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| KovaError::Mcp(format!("HTTP request to MCP server failed: {e}")))
+    }
+
+    /// Extract the JSON-RPC result matching `id` from an SSE response body.
+    ///
+    /// Frames are `\n\n`-separated; `data:` lines within a frame are concatenated
+    /// and parsed as a JSON-RPC response.
+    fn parse_sse_result(body: &str, id: u64) -> Result<serde_json::Value, KovaError> {
+        for frame in body.split("\n\n") {
+            let mut data = String::new();
+            for line in frame.lines() {
+                if let Some(rest) = line.strip_prefix("data:") {
+                    data.push_str(rest.trim_start());
+                }
+            }
+            if data.is_empty() {
+                continue;
+            }
+            if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(&data)
+                && resp.id == Some(id)
+            {
+                if let Some(err) = resp.error {
+                    return Err(KovaError::Mcp(format!("MCP error: {}", err.message)));
+                }
+                return resp
+                    .result
+                    .ok_or_else(|| KovaError::Mcp("MCP response missing result".into()));
+            }
+        }
+        Err(KovaError::Mcp(
+            "no matching JSON-RPC response in SSE stream".into(),
+        ))
     }
 
     /// Create a dummy `McpClient` for testing purposes.
@@ -667,5 +908,171 @@ for line in sys.stdin:
         let tools = client.tools_list().await.expect("tools_list");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "from_env");
+    }
+
+    // ── Streamable HTTP transport ──────────────────────────────────────────────
+
+    /// initialize captures `Mcp-Session-Id`, which is echoed on later requests,
+    /// and a plain `application/json` tools/list response is parsed.
+    #[tokio::test]
+    async fn streamable_http_handshake_session_and_json() {
+        use wiremock::matchers::{body_partial_json, header, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // initialize → returns a session id header.
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "initialize" }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Mcp-Session-Id", "sess-123")
+                    .set_body_json(serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1,
+                        "result": { "protocolVersion": "2025-06-18", "capabilities": {} }
+                    })),
+            )
+            .mount(&server)
+            .await;
+        // initialized notification → accepted.
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "notifications/initialized" }),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        // tools/list only succeeds when the session id is echoed back.
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "tools/list" }),
+            ))
+            .and(header("mcp-session-id", "sess-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 2,
+                "result": { "tools": [{ "name": "ping" }] }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = McpClient::connect(McpTransport::StreamableHttp {
+            url: server.uri(),
+            headers: HashMap::new(),
+            auth: None,
+        })
+        .await
+        .expect("connect");
+
+        let tools = client.tools_list().await.expect("tools_list");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "ping");
+    }
+
+    /// A `text/event-stream` response is parsed by extracting the `data:` frame.
+    #[tokio::test]
+    async fn streamable_http_parses_sse_response() {
+        use wiremock::matchers::{body_partial_json, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "initialize" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "result": { "capabilities": {} }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "notifications/initialized" }),
+            ))
+            .respond_with(ResponseTemplate::new(202))
+            .mount(&server)
+            .await;
+        // tools/list answered as an SSE frame.
+        let sse = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"sse_tool\"}]}}\n\n";
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "method": "tools/list" }),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(sse.as_bytes(), "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = McpClient::connect(McpTransport::StreamableHttp {
+            url: server.uri(),
+            headers: HashMap::new(),
+            auth: None,
+        })
+        .await
+        .expect("connect");
+
+        let tools = client.tools_list().await.expect("tools_list");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "sse_tool");
+    }
+
+    /// A `401` triggers exactly one `refresh()` and a retry with the new token.
+    #[tokio::test]
+    async fn streamable_http_refreshes_on_401() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use wiremock::matchers::{header, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[derive(Debug)]
+        struct RotatingToken {
+            current: Mutex<String>,
+            refreshes: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl TokenProvider for RotatingToken {
+            async fn token(&self) -> Result<String, KovaError> {
+                Ok(self.current.lock().await.clone())
+            }
+            async fn refresh(&self) -> Result<String, KovaError> {
+                self.refreshes.fetch_add(1, Ordering::SeqCst);
+                let mut cur = self.current.lock().await;
+                *cur = "fresh-token".to_string();
+                Ok(cur.clone())
+            }
+        }
+
+        let server = MockServer::start().await;
+        // Any request with the stale token is rejected.
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer stale-token"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        // With the fresh token, initialize/initialized/tools all succeed.
+        Mock::given(method("POST"))
+            .and(header("authorization", "Bearer fresh-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "result": { "tools": [{ "name": "ok" }] }
+            })))
+            .mount(&server)
+            .await;
+
+        let provider = Arc::new(RotatingToken {
+            current: Mutex::new("stale-token".to_string()),
+            refreshes: AtomicUsize::new(0),
+        });
+        let client = McpClient::connect(McpTransport::StreamableHttp {
+            url: server.uri(),
+            headers: HashMap::new(),
+            auth: Some(provider.clone()),
+        })
+        .await
+        .expect("connect should recover via refresh");
+
+        let tools = client.tools_list().await.expect("tools_list");
+        assert_eq!(tools[0].name, "ok");
+        // Exactly one refresh during the initialize 401; later calls use fresh token.
+        assert_eq!(provider.refreshes.load(Ordering::SeqCst), 1);
     }
 }

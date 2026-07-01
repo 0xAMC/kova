@@ -31,7 +31,7 @@ kova
 ├── tool         # Tool trait + thread-safe ToolRegistry
 ├── tools        # Built-in fs/shell/web tools (feature `tools` / `web-tools`)
 ├── memory       # MemoryStore trait + InMemoryStore
-├── mcp          # MCP client (stdio / HTTP+SSE) + McpTool adapter
+├── mcp          # MCP client (stdio / HTTP+SSE / Streamable HTTP + OAuth) + McpTool adapter
 ├── orchestrator # Multi-agent patterns (sequential, parallel, router)
 ├── streaming    # StreamingHandler trait + SSE parser
 ├── telemetry    # TelemetryConfig + MetricsCollector
