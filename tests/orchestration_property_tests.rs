@@ -72,10 +72,7 @@ impl LlmProvider for FailingProvider {
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
     ) -> Result<ModelResponse, KovaError> {
-        Err(KovaError::Provider {
-            message: self.message.clone(),
-            status_code: Some(500),
-        })
+        Err(KovaError::provider_http(500, None, self.message.clone()))
     }
 
     async fn chat_completion_stream(

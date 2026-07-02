@@ -490,7 +490,7 @@ proptest! {
         let result = format_response(oai_response);
         prop_assert!(result.is_err());
         match result.unwrap_err() {
-            KovaError::Provider { message, status_code } => {
+            KovaError::Provider { message, status_code, .. } => {
                 prop_assert!(message.contains("Unrecognized role"));
                 prop_assert!(message.contains(&role));
                 prop_assert_eq!(status_code, None);

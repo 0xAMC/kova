@@ -13,7 +13,7 @@ use crate::models::{
     ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, StreamEvent, ToolDefinition,
 };
 use crate::provider::LlmProvider;
-use crate::provider::http::map_request_error;
+use crate::provider::http::{error_from_response, map_request_error};
 
 pub struct OpenAiCompatibleProvider {
     client: Client,
@@ -84,23 +84,16 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 err
             })?;
 
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                let err = KovaError::Provider {
-                    message: body,
-                    status_code: Some(status.as_u16()),
-                };
+            if !response.status().is_success() {
+                let err = error_from_response(response).await;
                 tracing::Span::current().record("otel.status_code", "ERROR");
                 tracing::warn!(error = %err, "LLM provider returned error");
                 return Err(err);
             }
 
             let oai_response: OaiChatCompletionResponse = response.json().await.map_err(|e| {
-                let err = KovaError::Provider {
-                    message: format!("Failed to deserialize response: {e}"),
-                    status_code: None,
-                };
+                let err =
+                    KovaError::provider_invalid(format!("Failed to deserialize response: {e}"));
                 tracing::Span::current().record("otel.status_code", "ERROR");
                 tracing::warn!(error = %err, "Failed to deserialize LLM response");
                 err
@@ -157,13 +150,8 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 err
             })?;
 
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                let err = KovaError::Provider {
-                    message: body,
-                    status_code: Some(status.as_u16()),
-                };
+            if !response.status().is_success() {
+                let err = error_from_response(response).await;
                 tracing::Span::current().record("otel.status_code", "ERROR");
                 tracing::warn!(error = %err, "LLM stream provider returned error");
                 return Err(err);
@@ -192,23 +180,16 @@ impl LlmProvider for OpenAiCompatibleProvider {
                 err
             })?;
 
-            let status = response.status();
-            if !status.is_success() {
-                let body = response.text().await.unwrap_or_default();
-                let err = KovaError::Provider {
-                    message: body,
-                    status_code: Some(status.as_u16()),
-                };
+            if !response.status().is_success() {
+                let err = error_from_response(response).await;
                 tracing::Span::current().record("otel.status_code", "ERROR");
                 tracing::warn!(error = %err, "List models provider returned error");
                 return Err(err);
             }
 
             let model_list: OaiModelListResponse = response.json().await.map_err(|e| {
-                let err = KovaError::Provider {
-                    message: format!("Failed to deserialize model list: {e}"),
-                    status_code: None,
-                };
+                let err =
+                    KovaError::provider_invalid(format!("Failed to deserialize model list: {e}"));
                 tracing::Span::current().record("otel.status_code", "ERROR");
                 err
             })?;

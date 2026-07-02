@@ -136,17 +136,14 @@ pub(crate) fn format_response(
         .choices
         .into_iter()
         .next()
-        .ok_or_else(|| KovaError::Provider {
-            message: "No choices in response".to_string(),
-            status_code: None,
-        })?;
+        .ok_or_else(|| KovaError::provider_invalid("No choices in response".to_string()))?;
 
     let role = choice.message.role.as_str();
     if role != "system" && role != "user" && role != "assistant" && role != "tool" {
-        return Err(KovaError::Provider {
-            message: format!("Unrecognized role: {}", role),
-            status_code: None,
-        });
+        return Err(KovaError::provider_invalid(format!(
+            "Unrecognized role: {}",
+            role
+        )));
     }
 
     let stop_reason = map_finish_reason(choice.finish_reason.as_deref());

@@ -30,10 +30,7 @@ struct FailingProvider {
 impl FailingProvider {
     fn provider_error() -> Self {
         Self {
-            error: KovaError::Provider {
-                message: "service unavailable".to_string(),
-                status_code: Some(503),
-            },
+            error: KovaError::provider_http(503, None, "service unavailable"),
         }
     }
 
@@ -57,15 +54,14 @@ impl LlmProvider for FailingProvider {
             KovaError::Provider {
                 message,
                 status_code,
+                class,
             } => Err(KovaError::Provider {
                 message: message.clone(),
                 status_code: *status_code,
+                class: class.clone(),
             }),
             KovaError::Connection(msg) => Err(KovaError::Connection(msg.clone())),
-            _ => Err(KovaError::Provider {
-                message: "unknown".to_string(),
-                status_code: None,
-            }),
+            _ => Err(KovaError::provider_invalid("unknown")),
         }
     }
 
@@ -311,6 +307,7 @@ async fn test_http_error_propagates_through_agent() {
         Err(KovaError::Provider {
             status_code: Some(500),
             message,
+            ..
         }) => {
             assert_eq!(message, "internal server error");
         }

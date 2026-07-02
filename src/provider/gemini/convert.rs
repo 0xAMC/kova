@@ -342,15 +342,11 @@ fn candidate_stop_reason(candidate: &GeminiCandidate) -> StopReason {
 }
 
 pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelResponse, KovaError> {
-    let candidate =
-        gemini_resp
-            .candidates
-            .into_iter()
-            .next()
-            .ok_or_else(|| KovaError::Provider {
-                message: "No candidates in response".to_string(),
-                status_code: None,
-            })?;
+    let candidate = gemini_resp
+        .candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| KovaError::provider_invalid("No candidates in response".to_string()))?;
 
     let stop_reason = candidate_stop_reason(&candidate);
 

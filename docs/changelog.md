@@ -2,6 +2,16 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
+## 0.8.0 — Provider error classification
+
+### Added
+- `ProviderErrorClass` — `AuthInvalid` (401), `AuthForbidden` (403), `RateLimited { retry_after }` (429, with the `Retry-After` header when sent), `Overloaded` (408/500/502/503/504/529), `InvalidRequest` (400/413/422), `NotFound` (404), `Other`. Exposed on `KovaError::Provider { class }`, via `err.provider_class()`, and in the prelude.
+- Constructors `KovaError::provider_http`, `provider_invalid`, `provider_auth` — all provider errors are now built through these, so classification is uniform across OpenAI-compatible, Gemini, Bedrock (exception types normalized to statuses first), and Ollama. Bedrock credential-chain failures classify as `AuthInvalid`.
+
+### Changed (breaking)
+- `KovaError::Provider` gained the required `class` field; construct via the new constructors instead of struct literals.
+- `KovaError::is_retryable()` now derives from the class (`RateLimited`/`Overloaded`); behavior is unchanged for all previously retryable statuses.
+
 ## 0.7.0
 
 ## Streamable HTTP transport + OAuth tokens

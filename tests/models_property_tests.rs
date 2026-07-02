@@ -195,14 +195,8 @@ proptest! {
 #[test]
 fn prop_error_display_non_empty() {
     let variants: Vec<KovaError> = vec![
-        KovaError::Provider {
-            message: "test".into(),
-            status_code: Some(500),
-        },
-        KovaError::Provider {
-            message: "test".into(),
-            status_code: None,
-        },
+        KovaError::provider_http(500, None, "test"),
+        KovaError::provider_invalid("test"),
         KovaError::Connection("timeout".into()),
         KovaError::ToolExecution {
             tool_name: "calc".into(),

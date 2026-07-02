@@ -302,6 +302,7 @@ proptest! {
                 KovaError::Provider {
                     status_code: Some(code),
                     message,
+                    ..
                 } => {
                     prop_assert_eq!(code, status_code);
                     prop_assert_eq!(message, body);

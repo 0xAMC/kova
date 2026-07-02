@@ -72,10 +72,7 @@ impl LlmProvider for StreamingMockProvider {
         _tools: &[ToolDefinition],
         _config: &InferenceConfig,
     ) -> Result<ModelResponse, KovaError> {
-        Err(KovaError::Provider {
-            message: "use chat_completion_stream".into(),
-            status_code: None,
-        })
+        Err(KovaError::provider_invalid("use chat_completion_stream"))
     }
 
     async fn chat_completion_stream(
@@ -462,10 +459,7 @@ mod run_stream_api {
             _tools: &[ToolDefinition],
             _config: &InferenceConfig,
         ) -> Result<ModelResponse, KovaError> {
-            Err(KovaError::Provider {
-                message: "use chat_completion_stream".into(),
-                status_code: None,
-            })
+            Err(KovaError::provider_invalid("use chat_completion_stream"))
         }
 
         async fn chat_completion_stream(

@@ -349,10 +349,9 @@ pub(crate) fn ndjson_byte_stream_to_events(
         }
         match serde_json::from_str::<OllamaResponse>(line) {
             Ok(resp) => LineOutcome::Events(format_stream_chunk(resp)),
-            Err(e) => LineOutcome::Fail(KovaError::Provider {
-                message: format!("Failed to parse streaming chunk: {e}"),
-                status_code: None,
-            }),
+            Err(e) => LineOutcome::Fail(KovaError::provider_invalid(format!(
+                "Failed to parse streaming chunk: {e}"
+            ))),
         }
     })
 }

@@ -19,15 +19,9 @@ pub(super) fn parse_bedrock_error(status_code: u16, body: &str) -> KovaError {
                 .as_deref()
                 .and_then(map_exception_status)
                 .unwrap_or(status_code);
-            KovaError::Provider {
-                message,
-                status_code: Some(mapped_status),
-            }
+            KovaError::provider_http(mapped_status, None, message)
         }
-        Err(_) => KovaError::Provider {
-            message: body.to_string(),
-            status_code: Some(status_code),
-        },
+        Err(_) => KovaError::provider_http(status_code, None, body.to_string()),
     }
 }
 
@@ -54,6 +48,7 @@ mod tests {
             KovaError::Provider {
                 message,
                 status_code,
+                ..
             } => {
                 assert_eq!(message, "Rate exceeded");
                 assert_eq!(status_code, Some(429));
@@ -70,6 +65,7 @@ mod tests {
             KovaError::Provider {
                 message,
                 status_code,
+                ..
             } => {
                 assert_eq!(message, "Access denied");
                 assert_eq!(status_code, Some(403));
@@ -86,6 +82,7 @@ mod tests {
             KovaError::Provider {
                 message,
                 status_code,
+                ..
             } => {
                 assert_eq!(message, "Invalid input");
                 assert_eq!(status_code, Some(400));
@@ -102,6 +99,7 @@ mod tests {
             KovaError::Provider {
                 message,
                 status_code,
+                ..
             } => {
                 assert_eq!(message, "Model not ready");
                 assert_eq!(status_code, Some(503));
@@ -118,6 +116,7 @@ mod tests {
             KovaError::Provider {
                 message,
                 status_code,
+                ..
             } => {
                 assert_eq!(message, "Model timeout");
                 assert_eq!(status_code, Some(504));
@@ -134,6 +133,7 @@ mod tests {
             KovaError::Provider {
                 message,
                 status_code,
+                ..
             } => {
                 assert_eq!(message, "Something went wrong");
                 assert_eq!(status_code, Some(418));
@@ -150,6 +150,7 @@ mod tests {
             KovaError::Provider {
                 message,
                 status_code,
+                ..
             } => {
                 assert_eq!(message, "This is not JSON at all");
                 assert_eq!(status_code, Some(502));
@@ -166,6 +167,7 @@ mod tests {
             KovaError::Provider {
                 message,
                 status_code,
+                ..
             } => {
                 assert_eq!(message, body);
                 assert_eq!(status_code, Some(429));

@@ -205,10 +205,7 @@ mod stateless_run {
             _tools: &[ToolDefinition],
             _config: &InferenceConfig,
         ) -> Result<ModelResponse, KovaError> {
-            Err(KovaError::Provider {
-                message: "boom".into(),
-                status_code: Some(500),
-            })
+            Err(KovaError::provider_http(500, None, "boom"))
         }
 
         async fn chat_completion_stream(
@@ -220,10 +217,7 @@ mod stateless_run {
             std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent, KovaError>> + Send>>,
             KovaError,
         > {
-            Err(KovaError::Provider {
-                message: "boom".into(),
-                status_code: Some(500),
-            })
+            Err(KovaError::provider_http(500, None, "boom"))
         }
 
         async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
@@ -312,10 +306,7 @@ mod retries {
         ) -> Result<ModelResponse, KovaError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
             if n < self.failures {
-                Err(KovaError::Provider {
-                    message: "rate limited".into(),
-                    status_code: Some(429),
-                })
+                Err(KovaError::provider_http(429, None, "rate limited"))
             } else {
                 Ok(make_text_response("recovered"))
             }
@@ -330,10 +321,7 @@ mod retries {
             std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent, KovaError>> + Send>>,
             KovaError,
         > {
-            Err(KovaError::Provider {
-                message: "unused".into(),
-                status_code: None,
-            })
+            Err(KovaError::provider_http(400, None, "unused"))
         }
 
         async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
@@ -398,10 +386,7 @@ mod retries {
                 _config: &InferenceConfig,
             ) -> Result<ModelResponse, KovaError> {
                 self.calls.fetch_add(1, Ordering::SeqCst);
-                Err(KovaError::Provider {
-                    message: "bad request".into(),
-                    status_code: Some(400),
-                })
+                Err(KovaError::provider_http(400, None, "bad request"))
             }
 
             async fn chat_completion_stream(
@@ -415,10 +400,7 @@ mod retries {
                 >,
                 KovaError,
             > {
-                Err(KovaError::Provider {
-                    message: "unused".into(),
-                    status_code: None,
-                })
+                Err(KovaError::provider_invalid("unused"))
             }
 
             async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {

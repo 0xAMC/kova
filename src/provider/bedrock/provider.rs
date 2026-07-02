@@ -64,10 +64,7 @@ impl BedrockProvider {
             }
             let sdk_config = loader.load().await;
             let provider = sdk_config.credentials_provider().ok_or_else(|| {
-                    KovaError::Provider {
-                        message: "Failed to resolve AWS credentials: no credentials provider found in the default chain".to_string(),
-                        status_code: None,
-                    }
+                    KovaError::provider_auth("Failed to resolve AWS credentials: no credentials provider found in the default chain".to_string())
                 })?;
             Arc::from(provider)
         };
@@ -75,9 +72,8 @@ impl BedrockProvider {
         let client = reqwest::Client::builder()
             .timeout(config.timeout)
             .build()
-            .map_err(|e| KovaError::Provider {
-                message: format!("Failed to build HTTP client: {e}"),
-                status_code: None,
+            .map_err(|e| {
+                KovaError::provider_invalid(format!("Failed to build HTTP client: {e}"))
             })?;
 
         Ok(Self {
@@ -99,9 +95,8 @@ impl BedrockProvider {
             .credentials_provider
             .provide_credentials()
             .await
-            .map_err(|e| KovaError::Provider {
-                message: format!("Failed to resolve AWS credentials: {e}"),
-                status_code: None,
+            .map_err(|e| {
+                KovaError::provider_auth(format!("Failed to resolve AWS credentials: {e}"))
             })?;
 
         let identity = creds.into();
@@ -113,25 +108,20 @@ impl BedrockProvider {
             .time(SystemTime::now())
             .settings(signing_settings)
             .build()
-            .map_err(|e| KovaError::Provider {
-                message: format!("Failed to build SigV4 signing params: {e}"),
-                status_code: None,
+            .map_err(|e| {
+                KovaError::provider_invalid(format!("Failed to build SigV4 signing params: {e}"))
             })?
             .into();
 
         let headers = [("content-type", "application/json")];
         let signable_request =
             SignableRequest::new(method, url, headers.into_iter(), SignableBody::Bytes(body))
-                .map_err(|e| KovaError::Provider {
-                    message: format!("Failed to create signable request: {e}"),
-                    status_code: None,
+                .map_err(|e| {
+                    KovaError::provider_invalid(format!("Failed to create signable request: {e}"))
                 })?;
 
         let (signing_instructions, _signature) = sign(signable_request, &signing_params)
-            .map_err(|e| KovaError::Provider {
-                message: format!("SigV4 signing failed: {e}"),
-                status_code: None,
-            })?
+            .map_err(|e| KovaError::provider_invalid(format!("SigV4 signing failed: {e}")))?
             .into_parts();
 
         Ok(signing_instructions
@@ -176,9 +166,8 @@ impl LlmProvider for BedrockProvider {
                 config,
                 self.config.additional_model_request_fields.clone(),
             );
-            let body = serde_json::to_vec(&bedrock_request).map_err(|e| KovaError::Provider {
-                message: format!("Failed to serialize request: {e}"),
-                status_code: None,
+            let body = serde_json::to_vec(&bedrock_request).map_err(|e| {
+                KovaError::provider_invalid(format!("Failed to serialize request: {e}"))
             })?;
             tracing::debug!(body = %String::from_utf8_lossy(&body), "Bedrock request body");
 
@@ -210,20 +199,15 @@ impl LlmProvider for BedrockProvider {
             }
 
             let response_text = response.text().await.map_err(|e| {
-                let err = KovaError::Provider {
-                    message: format!("Failed to read response body: {e}"),
-                    status_code: None,
-                };
+                let err = KovaError::provider_invalid(format!("Failed to read response body: {e}"));
                 tracing::Span::current().record("otel.status_code", "ERROR");
                 err
             })?;
             tracing::debug!(body = %response_text, "Bedrock response body");
             let bedrock_response: BedrockConverseResponse = serde_json::from_str(&response_text)
                 .map_err(|e| {
-                    let err = KovaError::Provider {
-                        message: format!("Failed to deserialize response: {e}"),
-                        status_code: None,
-                    };
+                    let err =
+                        KovaError::provider_invalid(format!("Failed to deserialize response: {e}"));
                     tracing::Span::current().record("otel.status_code", "ERROR");
                     err
                 })?;
@@ -265,9 +249,8 @@ impl LlmProvider for BedrockProvider {
                 config,
                 self.config.additional_model_request_fields.clone(),
             );
-            let body = serde_json::to_vec(&bedrock_request).map_err(|e| KovaError::Provider {
-                message: format!("Failed to serialize request: {e}"),
-                status_code: None,
+            let body = serde_json::to_vec(&bedrock_request).map_err(|e| {
+                KovaError::provider_invalid(format!("Failed to serialize request: {e}"))
             })?;
             tracing::debug!(body = %String::from_utf8_lossy(&body), "Bedrock stream request body");
 
@@ -390,10 +373,9 @@ impl LlmProvider for BedrockProvider {
             }
 
             let list_response: BedrockModelListResponse = response.json().await.map_err(|e| {
-                let err = KovaError::Provider {
-                    message: format!("Failed to deserialize model list response: {e}"),
-                    status_code: None,
-                };
+                let err = KovaError::provider_invalid(format!(
+                    "Failed to deserialize model list response: {e}"
+                ));
                 tracing::Span::current().record("otel.status_code", "ERROR");
                 err
             })?;

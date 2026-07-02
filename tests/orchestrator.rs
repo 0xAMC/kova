@@ -44,10 +44,7 @@ impl kova_sdk::provider::LlmProvider for FailingMockProvider {
         _tools: &[kova_sdk::models::ToolDefinition],
         _config: &kova_sdk::models::InferenceConfig,
     ) -> Result<kova_sdk::models::ModelResponse, KovaError> {
-        Err(KovaError::Provider {
-            message: "intentional failure".into(),
-            status_code: Some(500),
-        })
+        Err(KovaError::provider_http(500, None, "intentional failure"))
     }
 
     async fn chat_completion_stream(

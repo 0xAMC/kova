@@ -540,10 +540,10 @@ println!("errors:   {}", m.error_count());
 ## Error Handling
 
 ```rust
-use kova_sdk::error::KovaError;
+use kova_sdk::error::{KovaError, ProviderErrorClass};
 
 match result {
-    Err(KovaError::Provider { message, status_code }) => { /* LLM API error */ }
+    Err(KovaError::Provider { message, status_code, class }) => { /* LLM API error */ }
     Err(KovaError::Connection(msg))                  => { /* Network unreachable */ }
     Err(KovaError::ToolExecution { tool_name, .. })  => { /* Tool panicked/failed */ }
     Err(KovaError::ToolNotFound(name))               => { /* LLM called unknown tool */ }
@@ -560,6 +560,31 @@ match result {
     _ => {}
 }
 ```
+
+### Provider error classification
+
+`KovaError::Provider` carries a `class: ProviderErrorClass` so applications can
+react precisely without inspecting messages or status codes:
+
+```rust
+match err.provider_class() {
+    Some(ProviderErrorClass::AuthInvalid)              => { /* 401 — prompt for a new key */ }
+    Some(ProviderErrorClass::AuthForbidden)            => { /* 403 — key lacks access */ }
+    Some(ProviderErrorClass::RateLimited { retry_after }) => { /* 429 — back off */ }
+    Some(ProviderErrorClass::Overloaded)               => { /* 408/5xx/529 — transient, retryable */ }
+    Some(ProviderErrorClass::InvalidRequest)           => { /* 400/413/422 — incl. context length */ }
+    Some(ProviderErrorClass::NotFound)                 => { /* 404 — unknown model/endpoint */ }
+    Some(ProviderErrorClass::Other) | None             => { /* everything else */ }
+}
+```
+
+Constructors: `KovaError::provider_http(status, retry_after, message)` (classifies
+from the status), `KovaError::provider_invalid(message)` (malformed responses),
+`KovaError::provider_auth(message)` (pre-HTTP credential failures, e.g. an empty
+AWS credential chain). `err.is_retryable()` is true for `RateLimited` and
+`Overloaded` classes plus connection failures and timeouts. Bedrock exception
+types (`ThrottlingException`, `AccessDeniedException`, …) are normalized to
+statuses before classification.
 
 ## Data Types
 
