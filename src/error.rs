@@ -94,6 +94,9 @@ pub enum KovaError {
 
     #[error("Max iterations ({0}) reached in tool-call loop")]
     MaxIterations(usize),
+
+    #[error("Turn cancelled")]
+    Cancelled,
 }
 
 impl KovaError {

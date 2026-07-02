@@ -21,6 +21,7 @@ use crate::telemetry::MetricsCollector;
 use crate::tool::ToolLifecycleHook;
 use crate::tool::approval::{ApprovalDecision, ToolApprovalHandler};
 use crate::tool::registry::ToolRegistry;
+use tokio_util::sync::CancellationToken;
 
 /// The result of one complete agentic turn.
 ///
@@ -126,13 +127,28 @@ impl Agent {
     /// (concurrently, bounded by `max_concurrent_tools`), and loops until no
     /// tool calls remain or `max_iterations` tool rounds are exhausted.
     pub async fn run(&self, messages: &[ConversationMessage]) -> Result<AgentResponse, KovaError> {
+        self.run_cancellable(messages, CancellationToken::new())
+            .await
+    }
+
+    /// Like [`run`](Self::run), aborting cleanly when `cancel` fires.
+    ///
+    /// Cancellation is checked between loop iterations and races the in-flight
+    /// provider call and tool executions; a cancelled turn returns
+    /// [`KovaError::Cancelled`] and produces no messages (in-flight tool
+    /// futures are dropped, killing spawned processes).
+    pub async fn run_cancellable(
+        &self,
+        messages: &[ConversationMessage],
+        cancel: CancellationToken,
+    ) -> Result<AgentResponse, KovaError> {
         let span = tracing::info_span!(
             "agent.run",
             otel.status_code = tracing::field::Empty,
             llm.stop_reason = tracing::field::Empty,
             llm.iterations = tracing::field::Empty,
         );
-        self.run_inner(messages, self.inference_config.clone())
+        self.run_inner(messages, self.inference_config.clone(), cancel)
             .instrument(span)
             .await
     }
@@ -164,7 +180,9 @@ impl Agent {
                 .stop_sequences
                 .or_else(|| self.inference_config.stop_sequences.clone()),
         };
-        self.run_inner(messages, config).instrument(span).await
+        self.run_inner(messages, config, CancellationToken::new())
+            .instrument(span)
+            .await
     }
 
     /// Run one agentic turn over caller-supplied history, yielding
@@ -191,6 +209,18 @@ impl Agent {
         &'a self,
         messages: &'a [ConversationMessage],
     ) -> impl futures::Stream<Item = Result<AgentEvent, KovaError>> + Send + 'a {
+        self.run_stream_cancellable(messages, CancellationToken::new())
+    }
+
+    /// Like [`run_stream`](Self::run_stream), aborting cleanly when `cancel`
+    /// fires: the stream yields [`KovaError::Cancelled`] and ends. Cancellation
+    /// races the in-flight provider stream and tool executions, so a stop takes
+    /// effect mid-response, not just between iterations.
+    pub fn run_stream_cancellable<'a>(
+        &'a self,
+        messages: &'a [ConversationMessage],
+        cancel: CancellationToken,
+    ) -> impl futures::Stream<Item = Result<AgentEvent, KovaError>> + Send + 'a {
         async_stream::try_stream! {
             let tool_defs = self.tool_registry.tool_definitions();
             let config = self.inference_config.clone();
@@ -204,12 +234,17 @@ impl Agent {
             thinking_tokens: None,
             };
             for iteration in 0..=self.max_iterations {
+                if cancel.is_cancelled() {
+                    Err(KovaError::Cancelled)?;
+                }
                 let llm_calls = iteration as u64 + 1;
 
                 let start = std::time::Instant::now();
-                let stream_result = self
-                    .open_stream_with_retry(&working, &tool_defs, &config)
-                    .await;
+                let stream_result = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => Err(KovaError::Cancelled),
+                    r = self.open_stream_with_retry(&working, &tool_defs, &config) => r,
+                };
                 if stream_result.is_err()
                     && let Some(m) = &self.metrics
                 {
@@ -218,7 +253,20 @@ impl Agent {
                 let mut stream = stream_result?;
 
                 let mut acc = StreamAccumulator::default();
-                while let Some(event_result) = stream.next().await {
+                loop {
+                    // Cancellation races the next stream event so a stop takes
+                    // effect mid-response; it surfaces below as Cancelled.
+                    let next = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => None,
+                        n = stream.next() => n,
+                    };
+                    let Some(event_result) = next else {
+                        if cancel.is_cancelled() {
+                            Err(KovaError::Cancelled)?;
+                        }
+                        break;
+                    };
                     match event_result {
                         Ok(event) => match &event {
                             StreamEvent::ContentDelta { text } => {
@@ -317,7 +365,16 @@ impl Agent {
                                 input: input.clone(),
                             };
                         }
-                        let tool_messages = self.execute_tools(tool_uses).await;
+                        // Dropping the in-flight futures on cancel kills any
+                        // spawned tool processes (`kill_on_drop`).
+                        let tool_messages = tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => None,
+                            msgs = self.execute_tools(tool_uses) => Some(msgs),
+                        };
+                        let Some(tool_messages) = tool_messages else {
+                            return Err(KovaError::Cancelled)?;
+                        };
                         for msg in &tool_messages {
                             for block in &msg.content {
                                 if let ContentBlock::ToolResult {
@@ -405,7 +462,11 @@ impl Agent {
             history.push(user_msg.clone());
 
             let response = self
-                .run_inner(&history, self.inference_config.clone())
+                .run_inner(
+                    &history,
+                    self.inference_config.clone(),
+                    CancellationToken::new(),
+                )
                 .await?;
 
             self.persist_turn(conversation_id, user_msg, &response.new_messages)
@@ -472,6 +533,7 @@ impl Agent {
         &self,
         messages: &[ConversationMessage],
         config: InferenceConfig,
+        cancel: CancellationToken,
     ) -> Result<AgentResponse, KovaError> {
         let tool_defs = self.tool_registry.tool_definitions();
 
@@ -486,9 +548,11 @@ impl Agent {
             thinking_tokens: None,
         };
 
-        let mut response = self
-            .timed_chat_completion(&working, &tool_defs, &config)
-            .await?;
+        let mut response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(KovaError::Cancelled),
+            r = self.timed_chat_completion(&working, &tool_defs, &config) => r?,
+        };
         Self::accumulate_usage(&mut usage, response.usage.as_ref());
 
         let mut llm_calls: u64 = 1;
@@ -501,12 +565,20 @@ impl Agent {
                         content: response.content.clone(),
                     });
                     let tool_uses = Self::extract_tool_uses(&response.content);
-                    let tool_messages = self.execute_tools(tool_uses).await;
+                    // Dropping the in-flight futures on cancel kills any
+                    // spawned tool processes (`kill_on_drop`).
+                    let tool_messages = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(KovaError::Cancelled),
+                        msgs = self.execute_tools(tool_uses) => msgs,
+                    };
                     working.extend(tool_messages);
 
-                    response = self
-                        .timed_chat_completion(&working, &tool_defs, &config)
-                        .await?;
+                    response = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(KovaError::Cancelled),
+                        r = self.timed_chat_completion(&working, &tool_defs, &config) => r?,
+                    };
                     Self::accumulate_usage(&mut usage, response.usage.as_ref());
                     llm_calls += 1;
                 }

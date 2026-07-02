@@ -426,3 +426,116 @@ mod retries {
         );
     }
 }
+
+// ── Cancellation ───────────────────────────────────────────────────
+
+mod cancellation {
+    use super::*;
+    use async_trait::async_trait;
+    use futures::Stream;
+    use kova_sdk::provider::LlmProvider;
+    use std::pin::Pin;
+    use std::time::Duration;
+    use tokio_util::sync::CancellationToken;
+
+    /// Provider that never responds — cancellation must cut it off.
+    struct HangingProvider;
+
+    #[async_trait]
+    impl LlmProvider for HangingProvider {
+        async fn chat_completion(
+            &self,
+            _messages: &[ConversationMessage],
+            _tools: &[ToolDefinition],
+            _config: &InferenceConfig,
+        ) -> Result<ModelResponse, KovaError> {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            unreachable!("cancelled before completion")
+        }
+
+        async fn chat_completion_stream(
+            &self,
+            _messages: &[ConversationMessage],
+            _tools: &[ToolDefinition],
+            _config: &InferenceConfig,
+        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
+        {
+            Ok(Box::pin(futures::stream::pending()))
+        }
+
+        async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn run_cancellable_aborts_hung_provider_call() {
+        let agent = AgentBuilder::new()
+            .provider(Arc::new(HangingProvider))
+            .build()
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        let canceller = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            canceller.cancel();
+        });
+
+        let start = std::time::Instant::now();
+        let err = agent
+            .run_cancellable(&[], cancel)
+            .await
+            .expect_err("cancelled turn must error");
+        assert!(matches!(err, KovaError::Cancelled), "got {err:?}");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "must abort promptly"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_stream_cancellable_ends_with_cancelled_mid_stream() {
+        use futures::StreamExt;
+
+        let agent = AgentBuilder::new()
+            .provider(Arc::new(HangingProvider))
+            .build()
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        let canceller = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            canceller.cancel();
+        });
+
+        let stream = agent.run_stream_cancellable(&[], cancel);
+        futures::pin_mut!(stream);
+        let start = std::time::Instant::now();
+        let mut saw_cancelled = false;
+        while let Some(event) = stream.next().await {
+            if let Err(KovaError::Cancelled) = event {
+                saw_cancelled = true;
+            }
+        }
+        assert!(saw_cancelled, "stream must surface Cancelled");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "must abort promptly"
+        );
+    }
+
+    #[tokio::test]
+    async fn pre_cancelled_token_fails_immediately() {
+        let agent = AgentBuilder::new()
+            .provider(Arc::new(HangingProvider))
+            .build()
+            .unwrap();
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let err = agent.run_cancellable(&[], cancel).await.unwrap_err();
+        assert!(matches!(err, KovaError::Cancelled), "got {err:?}");
+    }
+}

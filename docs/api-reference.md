@@ -53,6 +53,12 @@ agent.run_with_config(messages, overrides: InferenceConfig) -> Result<AgentRespo
 // Pull-based streaming: TextDelta / ThinkingDelta / ToolCallStarted /
 // ToolCallFinished / TurnCompleted { response }.
 agent.run_stream(messages) -> impl Stream<Item = Result<AgentEvent, KovaError>>
+
+// Cancellable variants: the token (prelude re-export of tokio-util's
+// CancellationToken) aborts the turn mid-provider-call or mid-tool-execution
+// with KovaError::Cancelled; no messages are produced.
+agent.run_cancellable(messages, cancel: CancellationToken) -> Result<AgentResponse, KovaError>
+agent.run_stream_cancellable(messages, cancel: CancellationToken) -> impl Stream<...>
 ```
 
 ```rust

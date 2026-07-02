@@ -2,9 +2,10 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
-## 0.8.0 — Provider error classification + MCP resilience
+## 0.8.0 — Provider error classification + MCP resilience + cancellation
 
 ### Added
+- `Agent::run_cancellable` / `Agent::run_stream_cancellable` — the stateless core primitives now accept a `tokio_util::sync::CancellationToken` (re-exported in the prelude). Cancellation races the in-flight provider call/stream and tool executions (dropped tool futures kill spawned processes via `kill_on_drop`); a cancelled turn returns the new `KovaError::Cancelled` and produces no messages. `run`/`run_stream` delegate with a never-cancelled token; the memory-backed `chat*` layer is intentionally not cancellable (pending removal — muaz owns session state).
 - `ProviderErrorClass` — `AuthInvalid` (401), `AuthForbidden` (403), `RateLimited { retry_after }` (429, with the `Retry-After` header when sent), `Overloaded` (408/500/502/503/504/529), `InvalidRequest` (400/413/422), `NotFound` (404), `Other`. Exposed on `KovaError::Provider { class }`, via `err.provider_class()`, and in the prelude.
 - Constructors `KovaError::provider_http`, `provider_invalid`, `provider_auth` — all provider errors are now built through these, so classification is uniform across OpenAI-compatible, Gemini, Bedrock (exception types normalized to statuses first), and Ollama. Bedrock credential-chain failures classify as `AuthInvalid`.
 

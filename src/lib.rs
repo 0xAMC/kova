@@ -33,4 +33,6 @@ pub mod prelude {
     pub use crate::tool::approval::{ApprovalDecision, ToolApprovalHandler};
     pub use crate::tool::registry::ToolRegistry;
     pub use crate::tool::{Tool, ToolLifecycleHook};
+    /// Re-exported for `Agent::run_cancellable` / `run_stream_cancellable`.
+    pub use tokio_util::sync::CancellationToken;
 }
