@@ -2,15 +2,20 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
-## 0.8.0 — Provider error classification
+## 0.8.0 — Provider error classification + MCP resilience
 
 ### Added
 - `ProviderErrorClass` — `AuthInvalid` (401), `AuthForbidden` (403), `RateLimited { retry_after }` (429, with the `Retry-After` header when sent), `Overloaded` (408/500/502/503/504/529), `InvalidRequest` (400/413/422), `NotFound` (404), `Other`. Exposed on `KovaError::Provider { class }`, via `err.provider_class()`, and in the prelude.
 - Constructors `KovaError::provider_http`, `provider_invalid`, `provider_auth` — all provider errors are now built through these, so classification is uniform across OpenAI-compatible, Gemini, Bedrock (exception types normalized to statuses first), and Ollama. Bedrock credential-chain failures classify as `AuthInvalid`.
 
+- `McpClient::reconnect()` — tears down the connection and re-establishes it from the stored transport (respawns the stdio child, re-runs the `initialize` handshake). `tools_list`/`tools_call` do this automatically: a dead transport (`KovaError::Connection`) triggers one reconnect-and-retry, so a crashed MCP child no longer bricks the session. Connect itself retries transient failures once with a 500ms backoff.
+- `tools/list` caching on `McpClient` — repeated agent builds against the same client don't re-query the server; the cache invalidates on `reconnect()`.
+- `McpClient::tools_call_with_timeout(name, args, timeout)` — per-call timeout override for tools known to run long (or that must fail fast).
+
 ### Changed (breaking)
 - `KovaError::Provider` gained the required `class` field; construct via the new constructors instead of struct literals.
 - `KovaError::is_retryable()` now derives from the class (`RateLimited`/`Overloaded`); behavior is unchanged for all previously retryable statuses.
+- MCP transport-level I/O failures (dead child process, broken HTTP stream) now surface as `KovaError::Connection` instead of `KovaError::Mcp`; server-reported JSON-RPC errors remain `Mcp`. Callers matching on `Mcp` for connectivity problems must match `Connection`.
 
 ## 0.7.0
 

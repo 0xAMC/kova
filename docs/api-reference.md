@@ -435,6 +435,14 @@ impl TokenProvider for MyTokenStore {
 }
 ```
 
+### Resilience
+
+- `client.reconnect()` re-establishes the connection from the stored transport (respawns stdio children, re-runs the `initialize` handshake) and clears the tools/list cache.
+- `tools_list()`/`tools_call()` auto-recover: a dead transport (`KovaError::Connection`) triggers one reconnect-and-retry. Server-reported JSON-RPC errors (`KovaError::Mcp`) never do.
+- `tools_list()` results are cached until reconnect.
+- `tools_call_with_timeout(name, args, timeout)` overrides the client's default per-request timeout for one call.
+- `connect()` retries transient failures once (500ms backoff).
+
 ## Streaming
 
 ```rust
