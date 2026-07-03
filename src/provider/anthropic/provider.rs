@@ -106,8 +106,7 @@ impl LlmProvider for AnthropicProvider {
         messages: &[ConversationMessage],
         tools: &[ToolDefinition],
         config: &InferenceConfig,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError>
-    {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>, KovaError> {
         let model_name = config.model.as_deref().unwrap_or(&self.config.model);
         let span = tracing::info_span!(
             "llm.chat_completion_stream",

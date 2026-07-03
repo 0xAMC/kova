@@ -726,8 +726,7 @@ impl Agent {
 
             match accumulated.stop_reason {
                 StopReason::ToolUse => {
-                    let content_blocks =
-                        Self::build_tool_use_content(
+                    let content_blocks = Self::build_tool_use_content(
                         &accumulated.thinking_blocks,
                         &accumulated.text,
                         &accumulated.tool_calls,

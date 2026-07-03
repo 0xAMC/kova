@@ -101,10 +101,7 @@ pub(super) fn format_request(
         thinking: provider
             .adaptive_thinking
             .then(|| json!({"type": "adaptive"})),
-        output_config: provider
-            .effort
-            .as_ref()
-            .map(|e| json!({"effort": e})),
+        output_config: provider.effort.as_ref().map(|e| json!({"effort": e})),
         cache_control: provider.cache.then(|| json!({"type": "ephemeral"})),
         stream: stream.then_some(true),
     }
@@ -401,7 +398,13 @@ mod tests {
             msg(Role::System, text("You are helpful.")),
             msg(Role::User, text("hi")),
         ];
-        let req = format_request(&messages, &[], &InferenceConfig::default(), &provider_cfg(), false);
+        let req = format_request(
+            &messages,
+            &[],
+            &InferenceConfig::default(),
+            &provider_cfg(),
+            false,
+        );
         assert_eq!(req.system.as_deref(), Some("You are helpful."));
         assert_eq!(req.messages.len(), 1);
         assert_eq!(req.messages[0].role, "user");
@@ -417,7 +420,13 @@ mod tests {
                 is_error: false,
             },
         )];
-        let req = format_request(&messages, &[], &InferenceConfig::default(), &provider_cfg(), false);
+        let req = format_request(
+            &messages,
+            &[],
+            &InferenceConfig::default(),
+            &provider_cfg(),
+            false,
+        );
         assert_eq!(req.messages[0].role, "user");
         let body = serde_json::to_value(&req.messages[0]).unwrap();
         assert_eq!(body["content"][0]["type"], "tool_result");
@@ -440,7 +449,13 @@ mod tests {
                 text("answer"),
             ],
         }];
-        let req = format_request(&messages, &[], &InferenceConfig::default(), &provider_cfg(), false);
+        let req = format_request(
+            &messages,
+            &[],
+            &InferenceConfig::default(),
+            &provider_cfg(),
+            false,
+        );
         let body = serde_json::to_value(&req.messages[0]).unwrap();
         let blocks = body["content"].as_array().unwrap();
         assert_eq!(blocks.len(), 2);
@@ -465,7 +480,9 @@ mod tests {
         assert_eq!(req.stream, Some(true));
         assert_eq!(req.max_tokens, 32_000);
 
-        let cfg = provider_cfg().with_adaptive_thinking(false).with_cache(false);
+        let cfg = provider_cfg()
+            .with_adaptive_thinking(false)
+            .with_cache(false);
         let req = format_request(
             &[msg(Role::User, text("hi"))],
             &[],

@@ -165,6 +165,7 @@ impl LlmProvider for BedrockProvider {
                 tools,
                 config,
                 self.config.additional_model_request_fields.clone(),
+                self.config.cache,
             );
             let body = serde_json::to_vec(&bedrock_request).map_err(|e| {
                 KovaError::provider_invalid(format!("Failed to serialize request: {e}"))
@@ -248,6 +249,7 @@ impl LlmProvider for BedrockProvider {
                 tools,
                 config,
                 self.config.additional_model_request_fields.clone(),
+                self.config.cache,
             );
             let body = serde_json::to_vec(&bedrock_request).map_err(|e| {
                 KovaError::provider_invalid(format!("Failed to serialize request: {e}"))
