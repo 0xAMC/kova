@@ -12,8 +12,8 @@ use tracing::Instrument;
 use crate::error::KovaError;
 use crate::memory::MemoryStore;
 use crate::models::{
-    ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
-    StreamEvent, ToolDefinition, UsageStats,
+    ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, ResponseFormat, Role,
+    StopReason, StreamEvent, ToolDefinition, UsageStats,
 };
 use crate::provider::{LlmProvider, RetryConfig};
 use crate::streaming::StreamingHandler;
@@ -179,10 +179,39 @@ impl Agent {
             stop_sequences: overrides
                 .stop_sequences
                 .or_else(|| self.inference_config.stop_sequences.clone()),
+            response_format: overrides
+                .response_format
+                .or_else(|| self.inference_config.response_format.clone()),
         };
         self.run_inner(messages, config, CancellationToken::new())
             .instrument(span)
             .await
+    }
+
+    /// Run one turn with the final text constrained to `format`'s JSON schema,
+    /// parsed into `T`.
+    ///
+    /// Returns the parsed value alongside the full [`AgentResponse`] (for
+    /// usage accounting and history persistence). A final text that fails to
+    /// parse as `T` is an error — with a schema-native provider that only
+    /// happens on truncation (`max_tokens`) or refusal.
+    pub async fn run_structured<T: serde::de::DeserializeOwned>(
+        &self,
+        messages: &[ConversationMessage],
+        format: ResponseFormat,
+    ) -> Result<(T, AgentResponse), KovaError> {
+        let overrides = InferenceConfig {
+            response_format: Some(format),
+            ..Default::default()
+        };
+        let response = self.run_with_config(messages, overrides).await?;
+        let value: T = serde_json::from_str(response.text.trim()).map_err(|e| {
+            KovaError::provider_invalid(format!(
+                "structured output did not match the requested schema: {e} (text: {})",
+                &response.text.chars().take(200).collect::<String>()
+            ))
+        })?;
+        Ok((value, response))
     }
 
     /// Run one agentic turn over caller-supplied history, yielding

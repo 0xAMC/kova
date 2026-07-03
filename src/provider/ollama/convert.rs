@@ -215,7 +215,7 @@ pub(crate) fn format_request(
         stream: streaming,
         tools: ollama_tools,
         think: provider_config.think.clone(),
-        format: None,
+        format: config.response_format.as_ref().map(|f| f.schema.clone()),
         options: build_options(provider_config, config),
         keep_alive: provider_config.keep_alive.clone(),
     }
@@ -761,5 +761,20 @@ mod tests {
         assert!(events.iter().any(
             |e| matches!(e, StreamEvent::ToolUseDelta { name: Some(n), .. } if n == "get_weather")
         ));
+    }
+
+    #[test]
+    fn response_format_maps_to_format_field() {
+        let provider_config = OllamaProviderConfig::new("llama3.2");
+        let schema = serde_json::json!({"type": "object", "properties": {"x": {"type": "integer"}}});
+        let config = InferenceConfig {
+            response_format: Some(crate::models::ResponseFormat::new(schema.clone())),
+            ..Default::default()
+        };
+        let req = format_request(&[], &[], &config, &provider_config, false);
+        assert_eq!(req.format, Some(schema));
+
+        let req = format_request(&[], &[], &InferenceConfig::default(), &provider_config, false);
+        assert!(req.format.is_none());
     }
 }

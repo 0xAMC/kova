@@ -302,6 +302,7 @@ pub(crate) fn format_request(
         || config.top_p.is_some()
         || config.stop_sequences.is_some()
         || thinking_config.is_some()
+        || config.response_format.is_some()
     {
         Some(GeminiGenerationConfig {
             max_output_tokens: config.max_tokens,
@@ -309,6 +310,14 @@ pub(crate) fn format_request(
             top_p: config.top_p,
             stop_sequences: config.stop_sequences.clone(),
             thinking_config,
+            response_mime_type: config
+                .response_format
+                .as_ref()
+                .map(|_| "application/json".to_string()),
+            response_schema: config
+                .response_format
+                .as_ref()
+                .map(|f| sanitize_schema_for_gemini(&f.schema)),
         })
     } else {
         None
@@ -1231,5 +1240,28 @@ mod tests {
             }
             other => panic!("Expected ToolUse, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn response_format_maps_to_response_schema() {
+        let config = InferenceConfig {
+            model: Some("gemini-2.5-flash".to_string()),
+            response_format: Some(crate::models::ResponseFormat::new(serde_json::json!({
+                "type": "object",
+                "properties": {"route": {"type": "string"}},
+                "additionalProperties": false
+            }))),
+            ..Default::default()
+        };
+        let req = format_request(&[user_msg("hi")], &[], &config, None);
+        let gen_cfg = req.generation_config.expect("generation config set");
+        assert_eq!(gen_cfg.response_mime_type.as_deref(), Some("application/json"));
+        let schema = gen_cfg.response_schema.expect("schema present");
+        // Sanitizer strips additionalProperties (unsupported by Gemini).
+        assert!(schema.get("additionalProperties").is_none());
+        assert_eq!(schema["type"], "object");
+
+        let req = format_request(&[user_msg("hi")], &[], &InferenceConfig::default(), None);
+        assert!(req.generation_config.is_none());
     }
 }

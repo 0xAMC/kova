@@ -126,6 +126,16 @@ pub(crate) fn format_request(
         stream: None,
         stream_options: None,
         reasoning_effort: None,
+        response_format: config.response_format.as_ref().map(|f| {
+            serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": f.name.clone().unwrap_or_else(|| "output".to_string()),
+                    "schema": f.schema,
+                    "strict": true,
+                },
+            })
+        }),
     }
 }
 

@@ -143,6 +143,35 @@ served from Anthropic's cache; per-call reads/writes surface as
 blocks round-trip through history as `ContentBlock::Thinking` — required for
 tool loops with extended thinking.
 
+## Structured output
+
+Constrain a turn's final text to a JSON schema and parse it in one call:
+
+```rust
+use kova_sdk::models::ResponseFormat;
+
+#[derive(serde::Deserialize)]
+struct Route { route: String, confidence: f64 }
+
+let format = ResponseFormat::named("route", serde_json::json!({
+    "type": "object",
+    "properties": {
+        "route": {"type": "string"},
+        "confidence": {"type": "number"}
+    },
+    "required": ["route", "confidence"],
+    "additionalProperties": false
+}));
+
+let (route, response) = agent.run_structured::<Route>(&messages, format).await?;
+```
+
+`response_format` can also be set on `InferenceConfig` directly (or per call via
+`run_with_config`). Mapping is native per provider — OpenAI `response_format`
+(strict), Anthropic `output_config.format`, Gemini `responseSchema`, Ollama
+`format`; Bedrock rejects it (no native support).
+
+
 | Field | Default | Description |
 |-------|---------|-------------|
 | `base_url` | required | API base URL |

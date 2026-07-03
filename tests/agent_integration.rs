@@ -539,3 +539,69 @@ mod cancellation {
         assert!(matches!(err, KovaError::Cancelled), "got {err:?}");
     }
 }
+
+// ── Structured output (run_structured) ─────────────────────────────
+
+#[tokio::test]
+async fn run_structured_parses_schema_constrained_text() {
+    #[derive(serde::Deserialize, Debug, PartialEq)]
+    struct Route {
+        route: String,
+        confidence: f64,
+    }
+
+    let provider = Arc::new(MockLlmProvider::with_response(make_text_response(
+        r#"{"route": "billing", "confidence": 0.9}"#,
+    )));
+    let agent = AgentBuilder::new().provider(provider).build().unwrap();
+
+    let format = ResponseFormat::named(
+        "route",
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "route": {"type": "string"},
+                "confidence": {"type": "number"}
+            },
+            "required": ["route", "confidence"],
+            "additionalProperties": false
+        }),
+    );
+    let messages = vec![ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "Which team?".into(),
+        }],
+    }];
+    let (route, response) = agent
+        .run_structured::<Route>(&messages, format)
+        .await
+        .unwrap();
+    assert_eq!(route.route, "billing");
+    assert!(route.confidence > 0.8);
+    assert_eq!(response.stop_reason, StopReason::EndTurn);
+}
+
+#[tokio::test]
+async fn run_structured_rejects_nonconforming_text() {
+    let provider = Arc::new(MockLlmProvider::with_response(make_text_response(
+        "sorry, plain prose",
+    )));
+    let agent = AgentBuilder::new().provider(provider).build().unwrap();
+
+    let messages = vec![ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text { text: "go".into() }],
+    }];
+    let err = agent
+        .run_structured::<serde_json::Value>(
+            &messages,
+            ResponseFormat::new(serde_json::json!({"type": "object"})),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("structured output"),
+        "unexpected error: {err}"
+    );
+}

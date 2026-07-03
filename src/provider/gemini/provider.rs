@@ -51,6 +51,7 @@ impl GeminiProvider {
             temperature: request_config.temperature,
             top_p: request_config.top_p,
             stop_sequences: request_config.stop_sequences.clone(),
+            response_format: request_config.response_format.clone(),
         }
     }
 }

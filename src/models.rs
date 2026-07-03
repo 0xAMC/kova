@@ -121,6 +121,41 @@ pub struct InferenceConfig {
     pub top_p: Option<f32>,
     /// Sequences that cause the model to stop generating.
     pub stop_sequences: Option<Vec<String>>,
+    /// Constrain the model's final text to a JSON schema. Mapped natively per
+    /// provider (OpenAI `response_format`, Anthropic `output_config.format`,
+    /// Gemini `responseSchema`, Ollama `format`); Bedrock has no native
+    /// equivalent and rejects requests that set this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+}
+
+/// A JSON-schema constraint on the model's output.
+///
+/// Keep schemas simple — the common subset all providers accept: `object`
+/// types with `properties`, `required`, `enum`, and `additionalProperties:
+/// false`. Provider-specific constructs are stripped where required
+/// (e.g. Gemini's schema sanitizer).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResponseFormat {
+    /// Schema name, required by some providers (OpenAI); defaults to
+    /// `"output"` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The JSON schema the final text must validate against.
+    pub schema: serde_json::Value,
+}
+
+impl ResponseFormat {
+    pub fn new(schema: serde_json::Value) -> Self {
+        Self { name: None, schema }
+    }
+
+    pub fn named(name: impl Into<String>, schema: serde_json::Value) -> Self {
+        Self {
+            name: Some(name.into()),
+            schema,
+        }
+    }
 }
 
 // ── Tool Definition (canonical) ────────────────────────────────────

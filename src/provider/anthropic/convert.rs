@@ -101,7 +101,19 @@ pub(super) fn format_request(
         thinking: provider
             .adaptive_thinking
             .then(|| json!({"type": "adaptive"})),
-        output_config: provider.effort.as_ref().map(|e| json!({"effort": e})),
+        output_config: {
+            let mut oc = serde_json::Map::new();
+            if let Some(e) = provider.effort.as_ref() {
+                oc.insert("effort".into(), json!(e));
+            }
+            if let Some(f) = config.response_format.as_ref() {
+                oc.insert(
+                    "format".into(),
+                    json!({"type": "json_schema", "schema": f.schema}),
+                );
+            }
+            (!oc.is_empty()).then_some(serde_json::Value::Object(oc))
+        },
         cache_control: provider.cache.then(|| json!({"type": "ephemeral"})),
         stream: stream.then_some(true),
     }
@@ -714,5 +726,21 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn response_format_merges_into_output_config() {
+        let cfg = provider_cfg().with_effort("high");
+        let inference = InferenceConfig {
+            response_format: Some(crate::models::ResponseFormat::new(
+                json!({"type": "object", "properties": {"route": {"type": "string"}}}),
+            )),
+            ..Default::default()
+        };
+        let req = format_request(&[msg(Role::User, text("hi"))], &[], &inference, &cfg, false);
+        let oc = req.output_config.unwrap();
+        assert_eq!(oc["effort"], "high");
+        assert_eq!(oc["format"]["type"], "json_schema");
+        assert_eq!(oc["format"]["schema"]["type"], "object");
     }
 }

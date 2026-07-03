@@ -160,6 +160,13 @@ impl LlmProvider for BedrockProvider {
             let encoded_model = url_encode_model_id(&self.config.model_id);
             let url = format!("{}/model/{}/converse", base, encoded_model);
 
+            if config.response_format.is_some() {
+                return Err(KovaError::provider_invalid(
+                    "response_format (structured output) is not supported by the Bedrock \
+                     provider; route structured steps to a provider with native JSON-schema \
+                     support (anthropic, openai-compatible, gemini, ollama)",
+                ));
+            }
             let bedrock_request = format_request(
                 messages,
                 tools,
@@ -244,6 +251,13 @@ impl LlmProvider for BedrockProvider {
             let encoded_model = url_encode_model_id(&self.config.model_id);
             let url = format!("{}/model/{}/converse-stream", base, encoded_model);
 
+            if config.response_format.is_some() {
+                return Err(KovaError::provider_invalid(
+                    "response_format (structured output) is not supported by the Bedrock \
+                     provider; route structured steps to a provider with native JSON-schema \
+                     support (anthropic, openai-compatible, gemini, ollama)",
+                ));
+            }
             let bedrock_request = format_request(
                 messages,
                 tools,
