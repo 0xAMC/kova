@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod embedding;
 pub mod error;
 pub mod mcp;
 pub mod memory;
@@ -21,6 +22,7 @@ pub use tool::approval::{ApprovalDecision, ToolApprovalHandler};
 /// ```
 pub mod prelude {
     pub use crate::agent::{Agent, AgentBuilder, AgentEvent, AgentResponse};
+    pub use crate::embedding::EmbeddingProvider;
     pub use crate::error::{KovaError, ProviderErrorClass};
     pub use crate::memory::MemoryStore;
     pub use crate::memory::in_memory::InMemoryStore;
