@@ -262,7 +262,9 @@ pub(crate) fn format_request(
                                 thought_signature,
                             })
                         }
-                        ContentBlock::ToolResult { .. } => {}
+                        // Signed reasoning blocks are Anthropic-specific;
+                        // Gemini carries thought signatures on ToolUse instead.
+                        ContentBlock::ToolResult { .. } | ContentBlock::Thinking { .. } => {}
                     }
                 }
                 if !parts.is_empty() {
@@ -385,6 +387,8 @@ pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelRespon
         output_tokens: u.candidates_token_count,
         total_tokens: u.total_token_count,
         thinking_tokens: u.thoughts_token_count,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
     });
 
     let thinking = if thinking_parts.is_empty() {
@@ -418,6 +422,8 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
             input_tokens: usage.prompt_token_count,
             output_tokens,
             thinking_tokens: usage.thoughts_token_count,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         });
     }
 

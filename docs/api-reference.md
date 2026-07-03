@@ -122,6 +122,27 @@ let config = OpenAiProviderConfig::new("https://api.openai.com", "gpt-4")
 let provider = Arc::new(OpenAiCompatibleProvider::new(config)?);
 ```
 
+### Anthropic (native Messages API)
+
+```rust
+use kova_sdk::provider::anthropic::{AnthropicProvider, AnthropicProviderConfig};
+
+let config = AnthropicProviderConfig::new("claude-opus-4-8")
+    .with_api_key(std::env::var("ANTHROPIC_API_KEY")?)
+    .with_effort("high");          // optional: output_config.effort
+    // .with_adaptive_thinking(false) // thinking: {"type":"adaptive"} is on by default
+    // .with_cache(false)             // automatic prompt caching is on by default
+
+let provider = Arc::new(AnthropicProvider::new(config)?);
+```
+
+Automatic prompt caching places a top-level `cache_control: {"type": "ephemeral"}`
+on every request, so the stable prefix (system prompt, tools, prior turns) is
+served from Anthropic's cache; per-call reads/writes surface as
+`UsageStats::cache_read_tokens` / `cache_creation_tokens`. Signed thinking
+blocks round-trip through history as `ContentBlock::Thinking` — required for
+tool loops with extended thinking.
+
 | Field | Default | Description |
 |-------|---------|-------------|
 | `base_url` | required | API base URL |

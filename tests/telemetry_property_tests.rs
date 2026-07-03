@@ -109,6 +109,8 @@ fn make_text_response(text: &str) -> ModelResponse {
             output_tokens: 5,
             total_tokens: 15,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }),
         thinking: None,
     }
@@ -132,6 +134,8 @@ fn make_tool_call_response(calls: Vec<(&str, &str)>) -> ModelResponse {
             output_tokens: 3,
             total_tokens: 11,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }),
         thinking: None,
     }

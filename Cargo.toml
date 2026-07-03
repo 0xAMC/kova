@@ -41,8 +41,9 @@ dom_smoothie = { version = "0.18", optional = true }
 htmd = { version = "0.5", optional = true }
 
 [features]
-default = ["openai", "gemini", "ollama", "bedrock"]
+default = ["openai", "gemini", "ollama", "bedrock", "anthropic"]
 openai = []
+anthropic = []
 gemini = []
 ollama = []
 # Filesystem and shell tools (read_file, list_dir, search, edit_file,

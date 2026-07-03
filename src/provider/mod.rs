@@ -1,3 +1,5 @@
+#[cfg(feature = "anthropic")]
+pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 pub mod config;
@@ -7,7 +9,8 @@ pub mod gemini;
     feature = "openai",
     feature = "gemini",
     feature = "ollama",
-    feature = "bedrock"
+    feature = "bedrock",
+    feature = "anthropic"
 ))]
 pub(crate) mod http;
 #[cfg(feature = "ollama")]

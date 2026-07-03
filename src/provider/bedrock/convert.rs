@@ -38,20 +38,20 @@ pub(super) fn format_request(
         let content = msg
             .content
             .iter()
-            .map(|block| match block {
-                ContentBlock::Text { text } => BedrockContentBlock::Text(text.clone()),
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(BedrockContentBlock::Text(text.clone())),
                 ContentBlock::ToolUse {
                     id, name, input, ..
-                } => BedrockContentBlock::ToolUse {
+                } => Some(BedrockContentBlock::ToolUse {
                     tool_use_id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
-                },
+                }),
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     is_error,
-                } => BedrockContentBlock::ToolResult {
+                } => Some(BedrockContentBlock::ToolResult {
                     tool_use_id: tool_use_id.clone(),
                     content: vec![BedrockToolResultContent {
                         text: content.clone(),
@@ -61,7 +61,10 @@ pub(super) fn format_request(
                     } else {
                         "success".to_string()
                     }),
-                },
+                }),
+                // Anthropic-signed reasoning blocks don't translate to the
+                // Converse API; drop them when history crosses providers.
+                ContentBlock::Thinking { .. } => None,
             })
             .collect();
 
@@ -172,6 +175,8 @@ pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResp
         total_tokens: resp.usage.total_tokens,
         // Bedrock folds reasoning into output_tokens; no separate count.
         thinking_tokens: None,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
     };
 
     Ok(ModelResponse {
@@ -246,6 +251,8 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }),
     }
 }

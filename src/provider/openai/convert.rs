@@ -73,7 +73,9 @@ pub(crate) fn format_request(
                         },
                     });
                 }
-                ContentBlock::ToolResult { .. } => {}
+                // Anthropic-signed reasoning blocks don't exist in the
+                // Chat Completions shape; drop them across providers.
+                ContentBlock::ToolResult { .. } | ContentBlock::Thinking { .. } => {}
             }
         }
 
@@ -175,6 +177,9 @@ pub(crate) fn format_response(
             .completion_tokens_details
             .as_ref()
             .map(|d| d.reasoning_tokens),
+        cache_read_tokens: u.prompt_tokens_details.as_ref().map(|d| d.cached_tokens),
+        // OpenAI's cache is automatic; writes aren't reported separately.
+        cache_creation_tokens: None,
     });
 
     Ok(ModelResponse {
@@ -208,6 +213,11 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
                 .completion_tokens_details
                 .as_ref()
                 .map(|d| d.reasoning_tokens),
+            cache_read_tokens: usage
+                .prompt_tokens_details
+                .as_ref()
+                .map(|d| d.cached_tokens),
+            cache_creation_tokens: None,
         });
     }
 

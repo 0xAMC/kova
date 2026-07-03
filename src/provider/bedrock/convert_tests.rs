@@ -174,6 +174,8 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
                 input_tokens,
                 output_tokens,
                 thinking_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
             };
             (event, expected)
         }),
@@ -185,6 +187,7 @@ fn message_for_block(block: &ContentBlock) -> ConversationMessage {
         ContentBlock::Text { .. } => Role::User,
         ContentBlock::ToolUse { .. } => Role::Assistant,
         ContentBlock::ToolResult { .. } => Role::User,
+        ContentBlock::Thinking { .. } => Role::Assistant,
     };
     ConversationMessage {
         role,
@@ -616,6 +619,8 @@ fn test_format_stream_event_metadata_emits_usage() {
             input_tokens: 10,
             output_tokens: 5,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         })
     );
 }

@@ -365,6 +365,8 @@ async fn test_streaming_usage_event_updates_last_turn_input_tokens() {
             input_tokens: 42,
             output_tokens: 7,
             thinking_tokens: None,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
         }),
         Ok(StreamEvent::StopEvent {
             stop_reason: StopReason::EndTurn,
@@ -395,6 +397,8 @@ async fn test_streaming_usage_event_delivered_to_handler() {
             input_tokens: 100,
             output_tokens: 50,
             thinking_tokens: None,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
         }),
         Ok(StreamEvent::ContentDelta {
             text: "done".into(),
@@ -534,6 +538,8 @@ mod run_stream_api {
                     input_tokens: 7,
                     output_tokens: 3,
                     thinking_tokens: None,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
                 }),
                 Ok(StreamEvent::StopEvent {
                     stop_reason: StopReason::EndTurn,

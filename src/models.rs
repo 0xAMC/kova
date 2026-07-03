@@ -34,6 +34,16 @@ pub enum ContentBlock {
         content: String,
         is_error: bool,
     },
+    /// A model reasoning block that must round-trip verbatim in conversation
+    /// history. Anthropic requires the thinking blocks (with their opaque
+    /// `signature`) to be passed back unchanged when continuing a tool-use
+    /// turn; other providers ignore these blocks when building requests.
+    #[serde(alias = "Thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        signature: Option<String>,
+    },
 }
 
 // ── Messages ───────────────────────────────────────────────────────
@@ -78,6 +88,15 @@ pub struct UsageStats {
     /// Bedrock, Ollama) — surfaced as "unknown" rather than a misleading `0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_tokens: Option<u32>,
+    /// Input tokens served from the provider's prompt cache (~10% price), when
+    /// reported. A subset of the prompt, *not* included in `input_tokens` on
+    /// providers that report them separately (Anthropic). `None` = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u32>,
+    /// Input tokens written to the provider's prompt cache this call (billed
+    /// at a premium), when reported. `None` = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u32>,
 }
 
 // ── Model Response ─────────────────────────────────────────────────
@@ -145,6 +164,24 @@ pub enum StreamEvent {
         /// A subset of `output_tokens`, mirrored onto [`UsageStats::thinking_tokens`].
         #[serde(default)]
         thinking_tokens: Option<u32>,
+        /// Prompt tokens served from cache, mirrored onto
+        /// [`UsageStats::cache_read_tokens`].
+        #[serde(default)]
+        cache_read_tokens: Option<u32>,
+        /// Prompt tokens written to cache, mirrored onto
+        /// [`UsageStats::cache_creation_tokens`].
+        #[serde(default)]
+        cache_creation_tokens: Option<u32>,
+    },
+    /// A complete reasoning block with its provider signature, for verbatim
+    /// round-trip in conversation history (Anthropic tool loops require it).
+    /// Display consumers use [`ThinkingDelta`](Self::ThinkingDelta); this
+    /// variant is consumed by the agent loop's accumulator and never doubles
+    /// the visible text.
+    ThinkingBlock {
+        thinking: String,
+        #[serde(default)]
+        signature: Option<String>,
     },
     Error {
         message: String,

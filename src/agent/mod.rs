@@ -227,12 +227,7 @@ impl Agent {
 
             let mut working = self.seed_messages(messages);
             let new_start = working.len();
-            let mut usage = UsageStats {
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-            thinking_tokens: None,
-            };
+            let mut usage = UsageStats::default();
             for iteration in 0..=self.max_iterations {
                 if cancel.is_cancelled() {
                     Err(KovaError::Cancelled)?;
@@ -302,10 +297,23 @@ impl Agent {
                                 input_tokens,
                                 output_tokens,
                                 thinking_tokens,
+                                cache_read_tokens,
+                                cache_creation_tokens,
                             } => {
                                 acc.input_tokens = Some(*input_tokens);
                                 acc.output_tokens = Some(*output_tokens);
                                 acc.thinking_tokens = *thinking_tokens;
+                                acc.cache_read_tokens = *cache_read_tokens;
+                                acc.cache_creation_tokens = *cache_creation_tokens;
+                            }
+                            StreamEvent::ThinkingBlock {
+                                thinking,
+                                signature,
+                            } => {
+                                acc.thinking_blocks.push(ContentBlock::Thinking {
+                                    thinking: thinking.clone(),
+                                    signature: signature.clone(),
+                                });
                             }
                             StreamEvent::Error { message } => {
                                 if let Some(m) = &self.metrics {
@@ -341,13 +349,15 @@ impl Agent {
                         total_tokens: acc.input_tokens.unwrap_or(0)
                             + acc.output_tokens.unwrap_or(0),
                         thinking_tokens: acc.thinking_tokens,
+                        cache_read_tokens: acc.cache_read_tokens,
+                        cache_creation_tokens: acc.cache_creation_tokens,
                     }),
                 );
 
                 match acc.stop_reason {
                     StopReason::ToolUse => {
                         let content_blocks =
-                            Self::build_tool_use_content(&acc.text, &acc.tool_calls);
+                            Self::build_tool_use_content(&acc.thinking_blocks, &acc.text, &acc.tool_calls);
                         working.push(ConversationMessage {
                             role: Role::Assistant,
                             content: content_blocks,
@@ -541,12 +551,7 @@ impl Agent {
         // produces. Messages past `new_start` become `new_messages`.
         let mut working = self.seed_messages(messages);
         let new_start = working.len();
-        let mut usage = UsageStats {
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            thinking_tokens: None,
-        };
+        let mut usage = UsageStats::default();
 
         let mut response = tokio::select! {
             biased;
@@ -639,12 +644,7 @@ impl Agent {
 
         let mut working = self.seed_messages(messages);
         let new_start = working.len();
-        let mut usage = UsageStats {
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            thinking_tokens: None,
-        };
+        let mut usage = UsageStats::default();
 
         let mut llm_calls: u64 = 0;
 
@@ -718,6 +718,8 @@ impl Agent {
                         total_tokens: accumulated.input_tokens.unwrap_or(0)
                             + accumulated.output_tokens.unwrap_or(0),
                         thinking_tokens: accumulated.thinking_tokens,
+                        cache_read_tokens: accumulated.cache_read_tokens,
+                        cache_creation_tokens: accumulated.cache_creation_tokens,
                     }),
                 );
             }
@@ -725,7 +727,11 @@ impl Agent {
             match accumulated.stop_reason {
                 StopReason::ToolUse => {
                     let content_blocks =
-                        Self::build_tool_use_content(&accumulated.text, &accumulated.tool_calls);
+                        Self::build_tool_use_content(
+                        &accumulated.thinking_blocks,
+                        &accumulated.text,
+                        &accumulated.tool_calls,
+                    );
                     working.push(ConversationMessage {
                         role: Role::Assistant,
                         content: content_blocks,
@@ -904,6 +910,15 @@ impl Agent {
                 acc.thinking_tokens =
                     Some(acc.thinking_tokens.unwrap_or(0) + u.thinking_tokens.unwrap_or(0));
             }
+            if acc.cache_read_tokens.is_some() || u.cache_read_tokens.is_some() {
+                acc.cache_read_tokens =
+                    Some(acc.cache_read_tokens.unwrap_or(0) + u.cache_read_tokens.unwrap_or(0));
+            }
+            if acc.cache_creation_tokens.is_some() || u.cache_creation_tokens.is_some() {
+                acc.cache_creation_tokens = Some(
+                    acc.cache_creation_tokens.unwrap_or(0) + u.cache_creation_tokens.unwrap_or(0),
+                );
+            }
         }
     }
 
@@ -944,8 +959,14 @@ impl Agent {
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
     }
 
-    fn build_tool_use_content(text: &str, tool_calls: &[StreamedToolCall]) -> Vec<ContentBlock> {
-        let mut blocks = Vec::new();
+    fn build_tool_use_content(
+        thinking_blocks: &[ContentBlock],
+        text: &str,
+        tool_calls: &[StreamedToolCall],
+    ) -> Vec<ContentBlock> {
+        // Thinking blocks come first — Anthropic requires the signed thinking
+        // block to precede the tool_use blocks it reasoned about.
+        let mut blocks = thinking_blocks.to_vec();
         if !text.is_empty() {
             blocks.push(ContentBlock::Text {
                 text: text.to_string(),
@@ -1159,10 +1180,23 @@ impl Agent {
                             input_tokens,
                             output_tokens,
                             thinking_tokens,
+                            cache_read_tokens,
+                            cache_creation_tokens,
                         } => {
                             acc.input_tokens = Some(*input_tokens);
                             acc.output_tokens = Some(*output_tokens);
                             acc.thinking_tokens = *thinking_tokens;
+                            acc.cache_read_tokens = *cache_read_tokens;
+                            acc.cache_creation_tokens = *cache_creation_tokens;
+                        }
+                        StreamEvent::ThinkingBlock {
+                            thinking,
+                            signature,
+                        } => {
+                            acc.thinking_blocks.push(ContentBlock::Thinking {
+                                thinking: thinking.clone(),
+                                signature: signature.clone(),
+                            });
                         }
                         StreamEvent::ThinkingDelta { .. } => {}
                         StreamEvent::Error { message } => {
@@ -1205,10 +1239,15 @@ struct StreamedToolCall {
 struct StreamAccumulator {
     text: String,
     tool_calls: Vec<StreamedToolCall>,
+    /// Complete reasoning blocks (with provider signatures) to round-trip
+    /// verbatim in the assistant message when the turn continues with tools.
+    thinking_blocks: Vec<ContentBlock>,
     stop_reason: StopReason,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
     thinking_tokens: Option<u32>,
+    cache_read_tokens: Option<u32>,
+    cache_creation_tokens: Option<u32>,
 }
 
 impl Default for StreamAccumulator {
@@ -1216,10 +1255,13 @@ impl Default for StreamAccumulator {
         Self {
             text: String::new(),
             tool_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
             stop_reason: StopReason::EndTurn,
             input_tokens: None,
             output_tokens: None,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }
     }
 }

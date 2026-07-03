@@ -265,6 +265,8 @@ pub(crate) fn format_response(resp: OllamaResponse) -> Result<ModelResponse, Kov
             output_tokens: resp.eval_count,
             total_tokens: resp.prompt_eval_count + resp.eval_count,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         })
     } else {
         None
@@ -327,6 +329,8 @@ pub(crate) fn format_stream_chunk(resp: OllamaResponse) -> Vec<StreamEvent> {
                 input_tokens: resp.prompt_eval_count,
                 output_tokens: resp.eval_count,
                 thinking_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
             });
         }
     }
