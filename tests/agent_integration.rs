@@ -605,3 +605,64 @@ async fn run_structured_rejects_nonconforming_text() {
         "unexpected error: {err}"
     );
 }
+
+// ── Context budget ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn context_budget_fails_before_provider_call() {
+    let provider = Arc::new(MockLlmProvider::with_response(make_text_response("hi")));
+    let agent = AgentBuilder::new()
+        .provider(provider.clone())
+        .context_budget(5) // ~20 chars — the message below exceeds it
+        .build()
+        .unwrap();
+
+    let messages = vec![ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "x".repeat(500),
+        }],
+    }];
+    let err = agent.run(&messages).await.unwrap_err();
+    assert!(
+        matches!(err, KovaError::ContextBudgetExceeded { measured, budget: 5 } if measured > 5),
+        "unexpected: {err}"
+    );
+    // The doomed provider call was never made.
+    assert_eq!(provider.call_count(), 0);
+}
+
+#[tokio::test]
+async fn context_budget_allows_small_prompts() {
+    let provider = Arc::new(MockLlmProvider::with_response(make_text_response("ok")));
+    let agent = AgentBuilder::new()
+        .provider(provider.clone())
+        .context_budget(10_000)
+        .build()
+        .unwrap();
+
+    let messages = vec![ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text { text: "hi".into() }],
+    }];
+    let response = agent.run(&messages).await.unwrap();
+    assert_eq!(response.text, "ok");
+    assert_eq!(provider.call_count(), 1);
+}
+
+#[tokio::test]
+async fn default_count_tokens_uses_heuristic() {
+    use kova_sdk::provider::{LlmProvider, heuristic_count_tokens};
+
+    let provider = MockLlmProvider::with_response(make_text_response("unused"));
+    let messages = vec![ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: "a".repeat(400),
+        }],
+    }];
+    let counted = provider.count_tokens(&messages, &[]).await.unwrap();
+    assert_eq!(counted, heuristic_count_tokens(&messages, &[]));
+    // ~400 chars / 4 ≈ 100 tokens (+ overhead)
+    assert!((100..=110).contains(&counted), "got {counted}");
+}

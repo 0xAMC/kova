@@ -85,6 +85,14 @@ impl AnthropicProviderConfig {
         format!("{}/v1/messages", self.base_url.trim_end_matches('/'))
     }
 
+    /// URL of the token-counting endpoint.
+    pub(crate) fn count_tokens_url(&self) -> String {
+        format!(
+            "{}/v1/messages/count_tokens",
+            self.base_url.trim_end_matches('/')
+        )
+    }
+
     /// URL of the model-listing endpoint.
     pub(crate) fn models_url(&self) -> String {
         format!("{}/v1/models", self.base_url.trim_end_matches('/'))

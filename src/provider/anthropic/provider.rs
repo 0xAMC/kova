@@ -140,6 +140,48 @@ impl LlmProvider for AnthropicProvider {
         .await
     }
 
+    async fn count_tokens(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<u32, KovaError> {
+        // The count endpoint takes the same shape as /v1/messages minus the
+        // generation-only fields.
+        let request = format_request(
+            messages,
+            tools,
+            &InferenceConfig::default(),
+            &self.config,
+            false,
+        );
+        let mut body = serde_json::to_value(&request)
+            .map_err(|e| KovaError::provider_invalid(format!("serialize count request: {e}")))?;
+        if let Some(obj) = body.as_object_mut() {
+            obj.remove("max_tokens");
+            obj.remove("stream");
+            obj.remove("cache_control");
+        }
+
+        let response = self
+            .apply_headers(self.client.post(self.config.count_tokens_url()))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| map_request_error(e, self.config.timeout))?;
+        if !response.status().is_success() {
+            return Err(error_from_response(response).await);
+        }
+
+        #[derive(serde::Deserialize)]
+        struct CountResponse {
+            input_tokens: u32,
+        }
+        let count: CountResponse = response.json().await.map_err(|e| {
+            KovaError::provider_invalid(format!("Failed to deserialize token count: {e}"))
+        })?;
+        Ok(count.input_tokens)
+    }
+
     async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
         let span = tracing::info_span!(
             "llm.list_models",

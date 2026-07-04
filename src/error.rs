@@ -97,6 +97,12 @@ pub enum KovaError {
 
     #[error("Turn cancelled")]
     Cancelled,
+
+    /// The assembled prompt exceeds the configured context budget
+    /// (see `AgentBuilder::context_budget`). Measured with the cheap
+    /// heuristic counter, so treat the numbers as approximate.
+    #[error("Context budget exceeded: ~{measured} tokens > budget {budget}")]
+    ContextBudgetExceeded { measured: u32, budget: u32 },
 }
 
 impl KovaError {

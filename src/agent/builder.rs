@@ -31,6 +31,7 @@ pub struct AgentBuilder {
     memory: Option<Arc<dyn MemoryStore>>,
     system_prompt: Option<String>,
     max_iterations: usize,
+    context_budget: Option<u32>,
     max_concurrent_tools: usize,
     inference_config: InferenceConfig,
     streaming_handler: Option<Arc<dyn StreamingHandler>>,
@@ -50,6 +51,7 @@ impl AgentBuilder {
             memory: None,
             system_prompt: None,
             max_iterations: 10,
+            context_budget: None,
             max_concurrent_tools: 10,
             inference_config: InferenceConfig::default(),
             streaming_handler: None,
@@ -73,6 +75,18 @@ impl AgentBuilder {
     }
 
     /// Set the maximum tool-call loop iterations (default: 10).
+    /// Cap the assembled prompt size for every provider call in a turn.
+    ///
+    /// Checked with the cheap offline heuristic (`heuristic_count_tokens`)
+    /// before each call — exceeding it fails the turn with
+    /// [`KovaError::ContextBudgetExceeded`] instead of sending a doomed
+    /// (or expensive) request. kova imposes no default; hosts supply the
+    /// number (e.g. per pipeline step).
+    pub fn context_budget(mut self, max_prompt_tokens: u32) -> Self {
+        self.context_budget = Some(max_prompt_tokens);
+        self
+    }
+
     pub fn max_iterations(mut self, n: usize) -> Self {
         self.max_iterations = n;
         self
@@ -200,6 +214,7 @@ impl AgentBuilder {
             memory,
             system_prompt: self.system_prompt,
             max_iterations: self.max_iterations,
+            context_budget: self.context_budget,
             max_concurrent_tools: self.max_concurrent_tools,
             inference_config: self.inference_config,
             streaming_handler: self.streaming_handler,

@@ -88,6 +88,7 @@ pub struct Agent {
     memory: Arc<dyn MemoryStore>,
     system_prompt: Option<String>,
     max_iterations: usize,
+    context_budget: Option<u32>,
     max_concurrent_tools: usize,
     inference_config: InferenceConfig,
     streaming_handler: Option<Arc<dyn StreamingHandler>>,
@@ -261,6 +262,7 @@ impl Agent {
                 if cancel.is_cancelled() {
                     Err(KovaError::Cancelled)?;
                 }
+                self.check_context_budget(&working, &tool_defs)?;
                 let llm_calls = iteration as u64 + 1;
 
                 let start = std::time::Instant::now();
@@ -582,6 +584,7 @@ impl Agent {
         let new_start = working.len();
         let mut usage = UsageStats::default();
 
+        self.check_context_budget(&working, &tool_defs)?;
         let mut response = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(KovaError::Cancelled),
@@ -608,6 +611,7 @@ impl Agent {
                     };
                     working.extend(tool_messages);
 
+                    self.check_context_budget(&working, &tool_defs)?;
                     response = tokio::select! {
                         biased;
                         _ = cancel.cancelled() => return Err(KovaError::Cancelled),
@@ -925,6 +929,23 @@ impl Agent {
             content: vec![ContentBlock::Text { text: p.clone() }],
         });
         system.chain(messages.iter().cloned()).collect()
+    }
+
+    /// Enforce the configured context budget against the working prompt,
+    /// using the offline heuristic (never a network call — this runs before
+    /// every provider call in the loop).
+    fn check_context_budget(
+        &self,
+        working: &[ConversationMessage],
+        tool_defs: &[ToolDefinition],
+    ) -> Result<(), KovaError> {
+        if let Some(budget) = self.context_budget {
+            let measured = crate::provider::heuristic_count_tokens(working, tool_defs);
+            if measured > budget {
+                return Err(KovaError::ContextBudgetExceeded { measured, budget });
+            }
+        }
+        Ok(())
     }
 
     fn accumulate_usage(acc: &mut UsageStats, usage: Option<&UsageStats>) {

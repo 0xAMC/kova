@@ -80,6 +80,20 @@ impl RetryConfig {
 /// dynamic dispatch via `dyn LlmProvider`.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
+    /// Approximate the prompt size of `messages` + `tools` in tokens.
+    ///
+    /// The default is a cheap offline heuristic (~4 chars/token plus per-item
+    /// overhead) — good enough for budget guards and compaction triggers.
+    /// Providers with a native counting endpoint (Anthropic) override this
+    /// with an exact, network-backed count.
+    async fn count_tokens(
+        &self,
+        messages: &[ConversationMessage],
+        tools: &[ToolDefinition],
+    ) -> Result<u32, KovaError> {
+        Ok(heuristic_count_tokens(messages, tools))
+    }
+
     /// Send a chat completion request and receive a full response.
     async fn chat_completion(
         &self,
@@ -98,4 +112,40 @@ pub trait LlmProvider: Send + Sync {
 
     /// List available models from the provider.
     async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError>;
+}
+
+/// Cheap offline token estimate: ~4 characters per token over all message
+/// text/tool payloads and tool schemas, plus a small per-message overhead.
+///
+/// Deliberately provider-agnostic and slightly conservative — callers use it
+/// for guardrails (context budgets, compaction triggers), not billing.
+pub fn heuristic_count_tokens(
+    messages: &[crate::models::ConversationMessage],
+    tools: &[crate::models::ToolDefinition],
+) -> u32 {
+    use crate::models::ContentBlock;
+
+    let mut chars: usize = 0;
+    for msg in messages {
+        chars += 8; // per-message formatting overhead (~2 tokens)
+        for block in &msg.content {
+            chars += match block {
+                ContentBlock::Text { text } => text.len(),
+                ContentBlock::ToolUse { name, input, .. } => {
+                    name.len() + serde_json::to_string(input).map(|s| s.len()).unwrap_or(0) + 16
+                }
+                ContentBlock::ToolResult { content, .. } => content.len() + 16,
+                ContentBlock::Thinking { thinking, .. } => thinking.len(),
+            };
+        }
+    }
+    for tool in tools {
+        chars += tool.name.len()
+            + tool.description.len()
+            + serde_json::to_string(&tool.parameters)
+                .map(|s| s.len())
+                .unwrap_or(0)
+            + 16;
+    }
+    (chars / 4) as u32
 }
