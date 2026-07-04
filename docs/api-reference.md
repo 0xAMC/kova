@@ -9,9 +9,8 @@ AgentBuilder::new()
     .inference_config(InferenceConfig)            // optional (model, max_tokens, temperature, top_p, stop_sequences)
     .tool(Arc<dyn Tool>)                          // optional, repeatable
     .tool_registry(ToolRegistry)                  // optional (composes with .tool())
-    .memory(Arc<dyn MemoryStore>)                // optional (default: InMemoryStore unlimited)
-    .streaming_handler(Arc<dyn StreamingHandler>) // optional
     .mcp_client(Arc<McpClient>, &str).await?      // optional, async
+    .context_budget(u32)                          // optional (max prompt tokens; heuristic guard)
     .max_iterations(usize)                        // optional (default: 10)
     .max_concurrent_tools(usize)                  // optional (default: 10)
     .retry_config(RetryConfig)                    // optional (default: 2 retries, exp backoff)
@@ -28,9 +27,8 @@ AgentBuilder::new()
 | `inference_config` | no | all-`None` | Sets `max_tokens`, `temperature`, `model` for every call |
 | `tool` | no | — | Repeatable; merged into `tool_registry` on build |
 | `tool_registry` | no | empty | Composes with `tool` |
-| `memory` | no | `InMemoryStore` (unbounded) | |
-| `streaming_handler` | no | `None` | Used by `chat_stream` only |
 | `mcp_client` | no | — | Async; discovers tools at build time |
+| `context_budget` | no | `None` | Max prompt tokens per call (heuristic); over-budget fails with `ContextBudgetExceeded` before the request |
 | `max_iterations` | no | `10` | Max tool-call loop iterations |
 | `max_concurrent_tools` | no | `10` | Semaphore cap for parallel tool calls |
 | `retry_config` | no | 2 retries | Exponential backoff on transient errors; `RetryConfig::disabled()` to turn off |
@@ -44,11 +42,14 @@ AgentBuilder::new()
 ### Stateless API (core)
 
 ```rust
-// One agentic turn over caller-owned history. No memory-store involvement.
+// One agentic turn over caller-owned history. Stateless — the host owns history.
 agent.run(messages: &[ConversationMessage]) -> Result<AgentResponse, KovaError>
 
 // Same, with per-call InferenceConfig overrides (unset fields fall back to agent defaults).
 agent.run_with_config(messages, overrides: InferenceConfig) -> Result<AgentResponse, KovaError>
+
+// Constrain the final text to a JSON schema and parse it into T.
+agent.run_structured::<T>(messages, format: ResponseFormat) -> Result<(T, AgentResponse), KovaError>
 
 // Pull-based streaming: TextDelta / ThinkingDelta / ToolCallStarted /
 // ToolCallFinished / TurnCompleted { response }.
@@ -80,24 +81,6 @@ let response = agent.run(&history).await?;
 history.extend(response.new_messages);
 ```
 
-### Session API (memory-backed convenience)
-
-```rust
-// Blocking response — waits for full LLM output
-agent.chat(conversation_id: &str, user_message: &str) -> Result<String, KovaError>
-
-// Like chat, but returns the full AgentResponse
-agent.chat_response(conversation_id: &str, user_message: &str) -> Result<AgentResponse, KovaError>
-
-// Streaming response — delivers chunks to StreamingHandler, returns full text
-agent.chat_stream(conversation_id: &str, user_message: &str) -> Result<String, KovaError>
-
-// Input tokens reported by the provider for the most recently completed turn.
-agent.last_turn_input_tokens() -> u32
-```
-
-Session writes are transactional per turn: the user message and produced messages are
-persisted only after the turn succeeds, so a failed turn never corrupts the conversation.
 
 ## Providers
 
@@ -427,16 +410,6 @@ into host state. The web tools guard against SSRF (private-address rejection +
 DNS-pinned client) and confine output size; the file tools reject paths that
 escape `workspace_root` via `..` or symlinks.
 
-## Memory
-
-```rust
-use kova_sdk::memory::in_memory::InMemoryStore;
-
-let store = InMemoryStore::new();                   // Unbounded
-let store = InMemoryStore::with_max_messages(100);  // Capped; preserves system prompt on truncation
-```
-
-Pass to the builder: `.memory(Arc::new(store))`.
 
 ## MCP
 
@@ -501,72 +474,23 @@ impl TokenProvider for MyTokenStore {
 
 ## Streaming
 
+Pull-based — no handler to register. `run_stream` yields `AgentEvent`s:
+
 ```rust
-use kova_sdk::streaming::StreamingHandler;
-use kova_sdk::models::StreamEvent;
-use kova_sdk::error::KovaError;
-use async_trait::async_trait;
+use futures::StreamExt;
+use kova_sdk::agent::AgentEvent;
 
-struct MyHandler;
-
-#[async_trait]
-impl StreamingHandler for MyHandler {
-    async fn on_chunk(&self, event: &StreamEvent) -> Result<(), KovaError> {
-        match event {
-            StreamEvent::ThinkingDelta { text } => eprint!("{text}"),   // reasoning output
-            StreamEvent::ContentDelta { text } => print!("{text}"),     // visible response
-            _ => {}
-        }
-        Ok(())
+let stream = agent.run_stream(&history);
+futures::pin_mut!(stream);
+while let Some(event) = stream.next().await {
+    match event? {
+        AgentEvent::ThinkingDelta { text } => eprint!("{text}"),
+        AgentEvent::TextDelta { text } => print!("{text}"),
+        AgentEvent::ToolCallStarted { name, .. } => eprintln!("⚙ {name}…"),
+        AgentEvent::TurnCompleted { response } => history.extend(response.new_messages),
+        _ => {}
     }
-    async fn on_complete(&self) -> Result<(), KovaError> { println!(); Ok(()) }
-    async fn on_error(&self, error: &KovaError) { eprintln!("Stream error: {error}"); }
 }
-
-let agent = AgentBuilder::new()
-    .provider(provider)
-    .streaming_handler(Arc::new(MyHandler))
-    .build()?;
-
-let text = agent.chat_stream("conv-1", "Tell me a story").await?;
-```
-
-## Orchestrator
-
-```rust
-use kova_sdk::orchestrator::{Orchestrator, OrchestratorPattern, OrchestratorOutput};
-use std::collections::HashMap;
-use std::time::Duration;
-
-let mut agents = HashMap::new();
-agents.insert("summarizer".into(), Arc::new(summarizer_agent));
-agents.insert("translator".into(), Arc::new(translator_agent));
-agents.insert("router".into(),     Arc::new(router_agent));
-
-let orch = Orchestrator::new(agents, Duration::from_secs(120));
-
-// Sequential
-let OrchestratorOutput::Single(text) = orch.execute(
-    OrchestratorPattern::Sequential(vec!["summarizer".into(), "translator".into()]),
-    "Long article...",
-).await? else { unreachable!() };
-
-// Parallel
-let OrchestratorOutput::Parallel(result) = orch.execute(
-    OrchestratorPattern::Parallel(vec!["summarizer".into(), "translator".into()]),
-    "Analyze this...",
-).await? else { unreachable!() };
-for (name, text) in &result.successes { println!("{name}: {text}"); }
-for (name, err)  in &result.failures  { eprintln!("{name}: {err}"); }
-
-// Router
-orch.execute(
-    OrchestratorPattern::Router {
-        router_agent: "router".into(),
-        downstream: vec!["summarizer".into(), "translator".into()],
-    },
-    "Translate this to French...",
-).await?;
 ```
 
 ## Telemetry
@@ -614,7 +538,6 @@ match result {
     Err(KovaError::Timeout(duration))                => { /* Request timed out */ }
     Err(KovaError::Mcp(msg))                         => { /* MCP protocol error */ }
     Err(KovaError::Memory(msg))                      => { /* Memory store error */ }
-    Err(KovaError::Orchestration(msg))               => { /* Orchestrator error */ }
     Err(KovaError::Build(msg))                       => { /* Builder misconfiguration */ }
     Err(KovaError::Stream(msg))                      => { /* Streaming error */ }
     Err(KovaError::MaxIterations(n))                 => { /* Tool loop hit cap */ }

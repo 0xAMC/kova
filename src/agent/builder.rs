@@ -4,11 +4,8 @@ use std::sync::atomic::AtomicU32;
 use crate::error::KovaError;
 use crate::mcp::McpClient;
 use crate::mcp::tool::McpTool;
-use crate::memory::MemoryStore;
-use crate::memory::in_memory::InMemoryStore;
 use crate::models::InferenceConfig;
 use crate::provider::{LlmProvider, RetryConfig};
-use crate::streaming::StreamingHandler;
 use crate::telemetry::MetricsCollector;
 use crate::tool::Tool;
 use crate::tool::ToolLifecycleHook;
@@ -28,13 +25,11 @@ pub struct AgentBuilder {
     provider: Option<Arc<dyn LlmProvider>>,
     tools: Vec<Arc<dyn Tool>>,
     tool_registry: ToolRegistry,
-    memory: Option<Arc<dyn MemoryStore>>,
     system_prompt: Option<String>,
     max_iterations: usize,
     context_budget: Option<u32>,
     max_concurrent_tools: usize,
     inference_config: InferenceConfig,
-    streaming_handler: Option<Arc<dyn StreamingHandler>>,
     approval_handler: Option<Arc<dyn ToolApprovalHandler>>,
     lifecycle_hook: Option<Arc<dyn ToolLifecycleHook>>,
     metrics: Option<Arc<MetricsCollector>>,
@@ -48,13 +43,11 @@ impl AgentBuilder {
             provider: None,
             tools: Vec::new(),
             tool_registry: ToolRegistry::new(),
-            memory: None,
             system_prompt: None,
             max_iterations: 10,
             context_budget: None,
             max_concurrent_tools: 10,
             inference_config: InferenceConfig::default(),
-            streaming_handler: None,
             approval_handler: None,
             lifecycle_hook: None,
             metrics: None,
@@ -117,19 +110,7 @@ impl AgentBuilder {
         self
     }
 
-    /// Set the memory store for conversation persistence.
-    ///
-    /// If not set, defaults to an [`InMemoryStore`] with no message limit.
-    pub fn memory(mut self, memory: Arc<dyn MemoryStore>) -> Self {
-        self.memory = Some(memory);
-        self
-    }
 
-    /// Set the streaming handler for receiving response chunks in real time.
-    pub fn streaming_handler(mut self, handler: Arc<dyn StreamingHandler>) -> Self {
-        self.streaming_handler = Some(handler);
-        self
-    }
 
     /// Connect an MCP client, discover its tools, and register them.
     ///
@@ -204,20 +185,14 @@ impl AgentBuilder {
             tool_registry.register(tool);
         }
 
-        let memory = self
-            .memory
-            .unwrap_or_else(|| Arc::new(InMemoryStore::new()));
-
         Ok(Agent {
             provider,
             tool_registry,
-            memory,
             system_prompt: self.system_prompt,
             max_iterations: self.max_iterations,
             context_budget: self.context_budget,
             max_concurrent_tools: self.max_concurrent_tools,
             inference_config: self.inference_config,
-            streaming_handler: self.streaming_handler,
             approval_handler: self.approval_handler,
             lifecycle_hook: self.lifecycle_hook,
             approval_cache: Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),

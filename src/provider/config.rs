@@ -2,7 +2,7 @@ use std::time::Duration;
 
 /// Common interface that all provider configs must implement.
 ///
-/// This lets the orchestrator and other generic code introspect
+/// This lets generic code introspect
 /// provider configuration without knowing the concrete type.
 pub trait ProviderConfig {
     /// Base URL of the provider API.

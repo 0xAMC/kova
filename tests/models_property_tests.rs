@@ -206,8 +206,6 @@ fn prop_error_display_non_empty() {
         },
         KovaError::ToolNotFound("missing".into()),
         KovaError::Mcp("connection refused".into()),
-        KovaError::Memory("full".into()),
-        KovaError::Orchestration("timeout".into()),
         KovaError::Build("missing provider".into()),
         KovaError::Stream("eof".into()),
         KovaError::MaxIterations(10),

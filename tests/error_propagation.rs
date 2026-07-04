@@ -23,6 +23,22 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ── Failing mock provider ──────────────────────────────────────────
 
+
+/// Run a single-user-message turn and return the assistant text (replaces the
+/// removed stateful `Agent::chat`; the agent is stateless).
+async fn run_text(
+    agent: &kova_sdk::agent::Agent,
+    text: &str,
+) -> Result<String, KovaError> {
+    let messages = [ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+    }];
+    agent.run(&messages).await.map(|r| r.text)
+}
+
 struct FailingProvider {
     error: KovaError,
 }
@@ -167,7 +183,7 @@ async fn test_provider_failure_returns_provider_error() {
         .build()
         .unwrap();
 
-    let result = agent.chat("conv", "hello").await;
+    let result = run_text(&agent, "hello").await;
     match result {
         Err(KovaError::Provider {
             status_code: Some(503),
@@ -187,7 +203,7 @@ async fn test_connection_failure_returns_connection_error() {
         .build()
         .unwrap();
 
-    let result = agent.chat("conv", "hello").await;
+    let result = run_text(&agent, "hello").await;
     match result {
         Err(KovaError::Connection(msg)) => {
             assert!(msg.contains("connection refused"));
@@ -212,7 +228,7 @@ async fn test_tool_failure_forwarded_to_llm_as_tool_result() {
 
     // The agent should NOT return an error — it should forward the tool
     // error to the LLM and get a text response back.
-    let result = agent.chat("conv", "use the tool").await;
+    let result = run_text(&agent, "use the tool").await;
     assert!(
         result.is_ok(),
         "Agent should forward tool errors to LLM, not propagate them. Got: {:?}",
@@ -270,7 +286,7 @@ async fn test_timeout_returns_timeout_or_connection_error() {
         .build()
         .unwrap();
 
-    let result = agent.chat("conv", "hello").await;
+    let result = run_text(&agent, "hello").await;
     match result {
         Err(KovaError::Timeout(_)) | Err(KovaError::Connection(_)) => {
             // Any of these is acceptable for a timeout scenario.
@@ -302,7 +318,7 @@ async fn test_http_error_propagates_through_agent() {
         .build()
         .unwrap();
 
-    let result = agent.chat("conv", "hello").await;
+    let result = run_text(&agent, "hello").await;
     match result {
         Err(KovaError::Provider {
             status_code: Some(500),

@@ -91,24 +91,18 @@ cargo test -p kova-sdk property
 | `tests/agent_integration.rs` | Agent + tool-call loop |
 | `tests/tool_calling.rs` | Tool invocation and parsing |
 | `tests/streaming.rs` | Streaming and SSE parsing |
-| `tests/orchestrator.rs` | Multi-agent orchestration |
 | `tests/concurrent_registry_tests.rs` | ToolRegistry thread safety |
 | `tests/error_propagation.rs` | Error surface |
 | `tests/parallel_tool_calling.rs` | Concurrent tool execution |
 | `tests/models_property_tests.rs` | Model type serde roundtrips |
 | `tests/tool_registry_property_tests.rs` | ToolRegistry lookup invariants |
 | `tests/tool_calling_property_tests.rs` | Tool-call loop properties |
-| `tests/memory_property_tests.rs` | MemoryStore ordering + truncation |
-| `tests/agent_memory_property_tests.rs` | Agent memory accumulation |
-| `tests/streaming_property_tests.rs` | StreamingHandler chunk ordering |
 | `tests/mcp_property_tests.rs` | MCP tool conversion |
-| `tests/orchestration_property_tests.rs` | Orchestrator patterns |
 | `tests/provider_property_tests.rs` | Provider behaviour properties |
 | `tests/telemetry_property_tests.rs` | Telemetry properties |
 | `tests/send_sync_assertions.rs` | Compile-time Send+Sync guards |
 | `tests/bedrock_integration.rs` | Bedrock provider (requires AWS) |
 | `tests/mock/` | `MockLlmProvider`, mock tools |
-| `memory/in_memory_tests.rs` | InMemoryStore unit tests |
 
 ## Feature Flags
 

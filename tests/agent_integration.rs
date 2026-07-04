@@ -6,12 +6,12 @@ use kova_sdk::agent::AgentBuilder;
 use kova_sdk::error::KovaError;
 use kova_sdk::models::*;
 
-use mock::provider::{MockLlmProvider, make_text_response};
+use mock::provider::{MockLlmProvider, make_text_response, run_text};
 
-// ── Basic chat loop ────────────────────────────────────────────────
+// ── Basic run loop ─────────────────────────────────────────────────
 
 #[tokio::test]
-async fn agent_chat_returns_assistant_text() {
+async fn agent_run_returns_assistant_text() {
     let provider = Arc::new(MockLlmProvider::with_response(make_text_response(
         "Hello from the LLM!",
     )));
@@ -21,13 +21,13 @@ async fn agent_chat_returns_assistant_text() {
         .build()
         .expect("build should succeed");
 
-    let reply = agent.chat("conv-1", "Hi there").await.unwrap();
+    let reply = run_text(&agent, "Hi there").await.unwrap();
     assert_eq!(reply, "Hello from the LLM!");
     assert_eq!(provider.call_count(), 1);
 }
 
 #[tokio::test]
-async fn agent_chat_with_system_prompt() {
+async fn agent_run_with_system_prompt() {
     let provider = Arc::new(MockLlmProvider::with_response(make_text_response(
         "I am helpful.",
     )));
@@ -38,12 +38,12 @@ async fn agent_chat_with_system_prompt() {
         .build()
         .expect("build should succeed");
 
-    let reply = agent.chat("conv-1", "Who are you?").await.unwrap();
+    let reply = run_text(&agent, "Who are you?").await.unwrap();
     assert_eq!(reply, "I am helpful.");
 }
 
 #[tokio::test]
-async fn agent_chat_multiple_turns() {
+async fn agent_run_multiple_turns() {
     let provider = Arc::new(MockLlmProvider::with_responses(vec![
         make_text_response("First reply"),
         make_text_response("Second reply"),
@@ -54,8 +54,8 @@ async fn agent_chat_multiple_turns() {
         .build()
         .unwrap();
 
-    let r1 = agent.chat("conv-1", "msg 1").await.unwrap();
-    let r2 = agent.chat("conv-1", "msg 2").await.unwrap();
+    let r1 = run_text(&agent, "msg 1").await.unwrap();
+    let r2 = run_text(&agent, "msg 2").await.unwrap();
 
     assert_eq!(r1, "First reply");
     assert_eq!(r2, "Second reply");
@@ -63,7 +63,7 @@ async fn agent_chat_multiple_turns() {
 }
 
 #[tokio::test]
-async fn agent_chat_empty_content_returns_empty_string() {
+async fn agent_run_empty_content_returns_empty_string() {
     // A response with no text content blocks should return "".
     let resp = ModelResponse {
         content: vec![],
@@ -76,7 +76,7 @@ async fn agent_chat_empty_content_returns_empty_string() {
 
     let agent = AgentBuilder::new().provider(provider).build().unwrap();
 
-    let reply = agent.chat("conv-1", "hello").await.unwrap();
+    let reply = run_text(&agent, "hello").await.unwrap();
     assert_eq!(reply, "");
 }
 
@@ -120,13 +120,8 @@ fn _assert_send_sync() {
 mod stateless_run {
     use std::sync::Arc;
 
-    use async_trait::async_trait;
     use kova_sdk::agent::AgentBuilder;
-    use kova_sdk::error::KovaError;
-    use kova_sdk::memory::MemoryStore;
-    use kova_sdk::memory::in_memory::InMemoryStore;
     use kova_sdk::models::*;
-    use kova_sdk::provider::LlmProvider;
 
     use crate::mock::provider::{MockLlmProvider, make_text_response, make_tool_call_response};
     use crate::mock::tool::MockTool;
@@ -141,7 +136,7 @@ mod stateless_run {
     }
 
     #[tokio::test]
-    async fn run_returns_new_messages_without_touching_memory() {
+    async fn run_returns_new_messages() {
         let provider = Arc::new(MockLlmProvider::with_responses(vec![
             make_tool_call_response(vec![(
                 "tc-1".to_string(),
@@ -150,11 +145,9 @@ mod stateless_run {
             )]),
             make_text_response("done"),
         ]));
-        let memory = Arc::new(InMemoryStore::new());
         let agent = AgentBuilder::new()
             .provider(provider)
             .tool(Arc::new(MockTool::new("greet", "hi")))
-            .memory(memory.clone())
             .build()
             .unwrap();
 
@@ -172,10 +165,6 @@ mod stateless_run {
         assert_eq!(response.usage.input_tokens, 20);
         assert_eq!(response.usage.output_tokens, 10);
         assert_eq!(response.stop_reason, StopReason::EndTurn);
-
-        // run() is stateless: memory untouched.
-        let stored = memory.get_history("any").await.unwrap();
-        assert!(stored.is_empty());
     }
 
     #[tokio::test]
@@ -195,84 +184,8 @@ mod stateless_run {
         assert_eq!(response.text, "first");
     }
 
-    struct FailingProvider;
 
-    #[async_trait]
-    impl LlmProvider for FailingProvider {
-        async fn chat_completion(
-            &self,
-            _messages: &[ConversationMessage],
-            _tools: &[ToolDefinition],
-            _config: &InferenceConfig,
-        ) -> Result<ModelResponse, KovaError> {
-            Err(KovaError::provider_http(500, None, "boom"))
-        }
 
-        async fn chat_completion_stream(
-            &self,
-            _messages: &[ConversationMessage],
-            _tools: &[ToolDefinition],
-            _config: &InferenceConfig,
-        ) -> Result<
-            std::pin::Pin<Box<dyn futures::Stream<Item = Result<StreamEvent, KovaError>> + Send>>,
-            KovaError,
-        > {
-            Err(KovaError::provider_http(500, None, "boom"))
-        }
-
-        async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
-            Ok(vec![])
-        }
-    }
-
-    #[tokio::test]
-    async fn failed_chat_turn_leaves_memory_unchanged() {
-        let memory = Arc::new(InMemoryStore::new());
-        let agent = AgentBuilder::new()
-            .provider(Arc::new(FailingProvider))
-            .memory(memory.clone())
-            .retry_config(kova_sdk::provider::RetryConfig::disabled())
-            .build()
-            .unwrap();
-
-        let err = agent.chat("conv-1", "hello").await.unwrap_err();
-        assert!(matches!(err, KovaError::Provider { .. }));
-
-        // No dangling user message — the failed turn was never persisted.
-        let history = memory.get_history("conv-1").await.unwrap();
-        assert!(
-            history.is_empty(),
-            "failed turn must not corrupt the conversation, got {history:?}"
-        );
-
-        // A subsequent successful chat is unaffected. (Provider always fails
-        // here, so just assert the error again for determinism.)
-        assert!(agent.chat("conv-1", "hello").await.is_err());
-    }
-
-    #[tokio::test]
-    async fn chat_response_exposes_usage_and_messages() {
-        let provider = Arc::new(MockLlmProvider::with_responses(vec![make_text_response(
-            "hi there",
-        )]));
-        let memory = Arc::new(InMemoryStore::new());
-        let agent = AgentBuilder::new()
-            .provider(provider)
-            .memory(memory.clone())
-            .build()
-            .unwrap();
-
-        let response = agent.chat_response("conv-1", "hello").await.unwrap();
-        assert_eq!(response.text, "hi there");
-        assert_eq!(response.usage.input_tokens, 10);
-        assert_eq!(response.new_messages.len(), 1);
-
-        // Session layer persisted user + assistant.
-        let history = memory.get_history("conv-1").await.unwrap();
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].role, Role::User);
-        assert_eq!(history[1].role, Role::Assistant);
-    }
 }
 
 // ── Retry layer ────────────────────────────────────────────────────
@@ -288,7 +201,7 @@ mod retries {
     use kova_sdk::models::*;
     use kova_sdk::provider::{LlmProvider, RetryConfig};
 
-    use crate::mock::provider::make_text_response;
+    use crate::mock::provider::{make_text_response, run_text};
 
     /// Fails the first `failures` calls with a retryable 429, then succeeds.
     struct FlakyProvider {
@@ -349,7 +262,7 @@ mod retries {
             .build()
             .unwrap();
 
-        let reply = agent.chat("conv-1", "hi").await.unwrap();
+        let reply = run_text(&agent, "hi").await.unwrap();
         assert_eq!(reply, "recovered");
         assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
     }
@@ -366,7 +279,7 @@ mod retries {
             .build()
             .unwrap();
 
-        let err = agent.chat("conv-1", "hi").await.unwrap_err();
+        let err = run_text(&agent, "hi").await.unwrap_err();
         assert!(err.is_retryable());
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2, "1 try + 1 retry");
     }
@@ -417,7 +330,7 @@ mod retries {
             .build()
             .unwrap();
 
-        let err = agent.chat("conv-1", "hi").await.unwrap_err();
+        let err = run_text(&agent, "hi").await.unwrap_err();
         assert!(!err.is_retryable());
         assert_eq!(
             provider.calls.load(Ordering::SeqCst),

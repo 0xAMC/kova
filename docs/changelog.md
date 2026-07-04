@@ -2,6 +2,18 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
+## 0.9.0 — Stateless core: memory, orchestrator, and push-streaming removed
+
+### Removed (breaking)
+- **`memory` module** — `MemoryStore` trait + `InMemoryStore`. The agent is stateless; conversation persistence, sessions, and compaction belong to the host. `AgentBuilder::memory` is gone.
+- **`orchestrator` module** — `Orchestrator`, `OrchestratorPattern`, `OrchestratorOutput`. Multi-agent composition (sequential/parallel/router) is an application concern, not an SDK one (muaz's `pipeline` engine owns it).
+- **Session/chat layer** — `Agent::chat`, `chat_response`, and `chat_stream`. Use `run` / `run_stream` over caller-owned history.
+- **Push-based streaming** — the `StreamingHandler` trait and `AgentBuilder::streaming_handler`. The only consumer was `chat_stream`; the pull-based `run_stream` (yielding `AgentEvent`s) is the streaming surface hosts use.
+- `KovaError::Memory` and `KovaError::Orchestration` variants (no remaining producers).
+
+### Notes
+- No functional change to `run` / `run_stream` / `run_structured` / `run_cancellable`. The `streaming` module retains its internal SSE / line-framing helpers used by the providers.
+
 ## 0.8.0 — Native Anthropic provider + provider error classification + MCP resilience + cancellation
 
 ### Added

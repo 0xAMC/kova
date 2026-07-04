@@ -172,3 +172,20 @@ impl LlmProvider for CapturingMockProvider {
         Ok(vec![])
     }
 }
+
+/// Run a single-user-message turn and return the assistant text.
+///
+/// Test convenience replacing the removed stateful `Agent::chat` wrapper —
+/// the agent is stateless, so the host constructs the one-message history.
+pub async fn run_text(
+    agent: &kova_sdk::agent::Agent,
+    text: &str,
+) -> Result<String, KovaError> {
+    let messages = [ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+    }];
+    agent.run(&messages).await.map(|r| r.text)
+}

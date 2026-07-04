@@ -14,6 +14,22 @@ use kova_sdk::models::*;
 use kova_sdk::provider::LlmProvider;
 use kova_sdk::tool::Tool;
 
+
+/// Run a single-user-message turn and return the assistant text (replaces the
+/// removed stateful `Agent::chat`; the agent is stateless).
+async fn run_text(
+    agent: &kova_sdk::agent::Agent,
+    text: &str,
+) -> Result<String, KovaError> {
+    let messages = [ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+    }];
+    agent.run(&messages).await.map(|r| r.text)
+}
+
 struct CapturingMock {
     responses: Vec<ModelResponse>,
     call_count: AtomicUsize,
@@ -168,7 +184,7 @@ proptest! {
                 .build()
                 .unwrap();
 
-            let _result = agent.chat("conv", "hi").await.unwrap();
+            let _result = run_text(&agent, "hi").await.unwrap();
 
             let requests = provider.captured_requests().await;
             prop_assert!(
@@ -260,7 +276,7 @@ proptest! {
             }
 
             let agent = builder.build().unwrap();
-            let _result = agent.chat("conv", "hi").await.unwrap();
+            let _result = run_text(&agent, "hi").await.unwrap();
 
             let requests = provider.captured_requests().await;
             prop_assert!(
@@ -345,7 +361,7 @@ proptest! {
                 .build()
                 .unwrap();
 
-            let result = agent.chat("conv", "hi").await.unwrap();
+            let result = run_text(&agent, "hi").await.unwrap();
             prop_assert_eq!(&result, &text);
 
             Ok(())
@@ -378,7 +394,7 @@ proptest! {
                 .build()
                 .unwrap();
 
-            let result = agent.chat("conv", "loop forever").await;
+            let result = run_text(&agent, "loop forever").await;
 
             match &result {
                 Err(KovaError::MaxIterations(n)) => {
@@ -456,7 +472,7 @@ proptest! {
             }
 
             let agent = builder.build().unwrap();
-            let result = agent.chat("conv", "run tools").await.unwrap();
+            let result = run_text(&agent, "run tools").await.unwrap();
             prop_assert_eq!(&result, "done");
 
             let requests = provider.captured_requests().await;

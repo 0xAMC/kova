@@ -4,7 +4,7 @@
 [![Docs.rs](https://docs.rs/kova-sdk/badge.svg)](https://docs.rs/kova-sdk)
 [![License](https://img.shields.io/crates/l/kova-sdk.svg)](LICENSE)
 
-Async-first Rust library for building LLM-powered agents. Trait-based architecture with pluggable providers, tool calling, memory, streaming, thinking-model support, MCP integration, multi-agent orchestration, and telemetry.
+Async-first Rust library for building LLM-powered agents. Trait-based architecture with pluggable providers, tool calling, structured output, prompt caching, embeddings, pull-based streaming, thinking-model support, MCP integration, and telemetry. The agent is stateless — the host owns conversation history.
 
 ## Installation
 
@@ -30,10 +30,8 @@ kova
 ├── provider     # LlmProvider trait + OpenAI / Bedrock / Gemini / Ollama implementations
 ├── tool         # Tool trait + thread-safe ToolRegistry
 ├── tools        # Built-in fs/shell/web tools (feature `tools` / `web-tools`)
-├── memory       # MemoryStore trait + InMemoryStore
 ├── mcp          # MCP client (stdio / HTTP+SSE / Streamable HTTP + OAuth) + McpTool adapter
-├── orchestrator # Multi-agent patterns (sequential, parallel, router)
-├── streaming    # StreamingHandler trait + SSE parser
+├── streaming    # SSE / line-framing helpers for provider streams
 ├── telemetry    # TelemetryConfig + MetricsCollector
 ├── models       # Shared data types (messages, content blocks, events)
 └── error        # Unified KovaError enum
@@ -48,7 +46,7 @@ kova
 | `GeminiProvider` | `x-goog-api-key` | `with_thinking_budget(N)` for `gemini-3.5-*` models etc |
 | `OllamaProvider` | None (local) | `with_think(OllamaThink::High)` for `qwen3`, `deepseek-r1`, etc. |
 
-Chain-of-thought output from thinking models is returned in `ModelResponse::thinking` and never stored in conversation history. During streaming it arrives as `StreamEvent::ThinkingDelta`; in blocking mode the agent forwards it to any registered `StreamingHandler`.
+Chain-of-thought output from thinking models is returned in `ModelResponse::thinking` and never stored in conversation history. During streaming it arrives as `AgentEvent::ThinkingDelta`.
 
 ## Quick Start
 
@@ -63,16 +61,18 @@ async fn main() -> Result<(), KovaError> {
     let provider = Arc::new(OpenAiCompatibleProvider::new(config)?);
 
     let agent = AgentBuilder::new().provider(provider).build()?;
-    let reply = agent.chat("conv-1", "Hello!").await?;
-    println!("{reply}");
+    let messages = vec![user_message("Hello!")];
+    let response = agent.run(&messages).await?;
+    println!("{}", response.text);
     Ok(())
 }
 ```
 
-## Stateless or session-backed — your choice
+## Stateless by design
 
 `Agent::run` is the core primitive: you own the conversation history, the agent owns the
-turn. Nothing is read from or written to a store.
+turn. Nothing is read from or written to any store — persistence, sessions, and
+compaction belong to the host.
 
 ```rust
 let mut history = vec![user_message("What's the weather in Tokyo?")];
@@ -80,9 +80,6 @@ let response = agent.run(&history).await?;          // tools execute, loop runs
 history.extend(response.new_messages);              // you persist
 println!("{} ({} tokens)", response.text, response.usage.total_tokens);
 ```
-
-`chat` / `chat_response` layer persistence on top via the configured `MemoryStore`.
-Writes are transactional per turn: a failed turn never leaves partial state behind.
 
 ## Streaming
 
@@ -103,8 +100,6 @@ while let Some(event) = stream.next().await {
     }
 }
 ```
-
-The callback-style `StreamingHandler` + `chat_stream` API is also available.
 
 ## Reliability
 

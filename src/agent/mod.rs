@@ -10,13 +10,11 @@ use tokio::sync::Semaphore;
 use tracing::Instrument;
 
 use crate::error::KovaError;
-use crate::memory::MemoryStore;
 use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, ResponseFormat, Role,
     StopReason, StreamEvent, ToolDefinition, UsageStats,
 };
 use crate::provider::{LlmProvider, RetryConfig};
-use crate::streaming::StreamingHandler;
 use crate::telemetry::MetricsCollector;
 use crate::tool::ToolLifecycleHook;
 use crate::tool::approval::{ApprovalDecision, ToolApprovalHandler};
@@ -79,19 +77,16 @@ pub enum AgentEvent {
 /// safely shared across async tasks.
 ///
 /// The core primitive is [`run`](Self::run): caller-supplied history in,
-/// [`AgentResponse`] out, no hidden state. [`chat`](Self::chat) and
-/// [`chat_response`](Self::chat_response) layer conversation persistence on
-/// top via the configured [`MemoryStore`].
+/// [`AgentResponse`] out, no hidden state. The agent holds no conversation
+/// state — the host owns and persists history.
 pub struct Agent {
     provider: Arc<dyn LlmProvider>,
     tool_registry: ToolRegistry,
-    memory: Arc<dyn MemoryStore>,
     system_prompt: Option<String>,
     max_iterations: usize,
     context_budget: Option<u32>,
     max_concurrent_tools: usize,
     inference_config: InferenceConfig,
-    streaming_handler: Option<Arc<dyn StreamingHandler>>,
     approval_handler: Option<Arc<dyn ToolApprovalHandler>>,
     lifecycle_hook: Option<Arc<dyn ToolLifecycleHook>>,
     /// Remembered `ApprovedForSession` / `DeniedAlways` decisions, keyed by
@@ -117,8 +112,7 @@ impl Agent {
 
     /// Run one agentic turn over caller-supplied conversation history.
     ///
-    /// This is the stateless core primitive: nothing is read from or written
-    /// to the memory store. `messages` is the conversation so far (ending
+    /// `messages` is the conversation so far (ending
     /// with the latest user message); the returned
     /// [`AgentResponse::new_messages`] contains everything the turn produced,
     /// for the caller to append to their own history.
@@ -222,8 +216,7 @@ impl Agent {
     /// arrive as deltas, tool execution is announced via
     /// `ToolCallStarted`/`ToolCallFinished`, and the final event is
     /// `TurnCompleted` carrying the full [`AgentResponse`] (including
-    /// `new_messages` for the caller to persist). No `StreamingHandler`
-    /// needs to be configured and nothing touches the memory store.
+    /// `new_messages` for the caller to persist).
     ///
     /// ```ignore
     /// let mut events = std::pin::pin!(agent.run_stream(&history));
@@ -467,104 +460,6 @@ impl Agent {
         }
     }
 
-    /// Send a user message in a persisted conversation and return the
-    /// assistant's response text.
-    ///
-    /// Convenience wrapper over [`run`](Self::run) backed by the configured
-    /// [`MemoryStore`]: history is loaded, the turn is executed, and — only
-    /// if the turn succeeds — the user message and all produced messages are
-    /// persisted. A failed turn leaves the conversation unchanged.
-    pub async fn chat(
-        &self,
-        conversation_id: &str,
-        user_message: &str,
-    ) -> Result<String, KovaError> {
-        Ok(self
-            .chat_response(conversation_id, user_message)
-            .await?
-            .text)
-    }
-
-    /// Like [`chat`](Self::chat), but returns the full [`AgentResponse`]
-    /// (usage, stop reason, produced messages) instead of just the text.
-    pub async fn chat_response(
-        &self,
-        conversation_id: &str,
-        user_message: &str,
-    ) -> Result<AgentResponse, KovaError> {
-        let span = tracing::info_span!(
-            "agent.chat",
-            conversation_id = conversation_id,
-            otel.status_code = tracing::field::Empty,
-        );
-        async {
-            let mut history = self.memory.get_history(conversation_id).await?;
-            let user_msg = Self::user_message(user_message);
-            history.push(user_msg.clone());
-
-            let response = self
-                .run_inner(
-                    &history,
-                    self.inference_config.clone(),
-                    CancellationToken::new(),
-                )
-                .await?;
-
-            self.persist_turn(conversation_id, user_msg, &response.new_messages)
-                .await?;
-            Ok(response)
-        }
-        .instrument(span)
-        .await
-    }
-
-    /// Send a user message and stream the assistant's response via the
-    /// configured [`StreamingHandler`].
-    ///
-    /// Behaves like [`chat`](Self::chat) but uses the provider's streaming
-    /// endpoint. Each chunk is delivered to the handler's `on_chunk` in
-    /// order. Tool-call loops are handled identically to `chat`. Returns
-    /// the accumulated assistant text. Like `chat`, memory is only written
-    /// when the whole turn succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns `KovaError::Build` if no streaming handler is configured.
-    pub async fn chat_stream(
-        &self,
-        conversation_id: &str,
-        user_message: &str,
-    ) -> Result<String, KovaError> {
-        let span = tracing::info_span!(
-            "agent.chat_stream",
-            conversation_id = conversation_id,
-            otel.status_code = tracing::field::Empty,
-            llm.stop_reason = tracing::field::Empty,
-            llm.iterations = tracing::field::Empty,
-        );
-        async {
-            let handler = self
-                .streaming_handler
-                .as_ref()
-                .ok_or_else(|| {
-                    KovaError::Build("StreamingHandler is required for chat_stream".into())
-                })?
-                .clone();
-
-            let mut history = self.memory.get_history(conversation_id).await?;
-            let user_msg = Self::user_message(user_message);
-            history.push(user_msg.clone());
-
-            let response = self.run_stream_inner(&history, &handler).await?;
-
-            self.persist_turn(conversation_id, user_msg, &response.new_messages)
-                .await?;
-            Ok(response.text)
-        }
-        .instrument(span)
-        .await
-    }
-
     // ── Non-streaming agentic loop ────────────────────────────────────
 
     // The first provider call is intentionally outside the loop so that
@@ -628,23 +523,6 @@ impl Agent {
                         self.last_turn_input_tokens
                             .store(u.input_tokens, Ordering::Relaxed);
                     }
-                    // Emit thinking content via the streaming handler so it displays
-                    // in the terminal even in non-streaming mode.
-                    if let (Some(thinking_text), Some(handler)) =
-                        (&response.thinking, &self.streaming_handler)
-                    {
-                        let _ = handler
-                            .on_chunk(&StreamEvent::ThinkingDelta {
-                                text: thinking_text.clone(),
-                            })
-                            .await;
-                        // Empty ContentDelta closes the thinking box without printing anything.
-                        let _ = handler
-                            .on_chunk(&StreamEvent::ContentDelta {
-                                text: String::new(),
-                            })
-                            .await;
-                    }
                     let text = Self::collect_text(&response.content);
                     working.push(ConversationMessage {
                         role: Role::Assistant,
@@ -666,141 +544,6 @@ impl Agent {
     }
 
     // ── Streaming agentic loop ────────────────────────────────────────
-
-    async fn run_stream_inner(
-        &self,
-        messages: &[ConversationMessage],
-        handler: &Arc<dyn StreamingHandler>,
-    ) -> Result<AgentResponse, KovaError> {
-        let tool_defs = self.tool_registry.tool_definitions();
-        let config = self.inference_config.clone();
-
-        let mut working = self.seed_messages(messages);
-        let new_start = working.len();
-        let mut usage = UsageStats::default();
-
-        let mut llm_calls: u64 = 0;
-
-        for _iteration in 0..=self.max_iterations {
-            llm_calls += 1;
-
-            let call_span = tracing::info_span!(
-                "llm.chat_completion_stream",
-                otel.status_code = tracing::field::Empty,
-                llm.input_tokens = tracing::field::Empty,
-                llm.output_tokens = tracing::field::Empty,
-                llm.stop_reason = tracing::field::Empty,
-            );
-            let handler_ref = handler.clone();
-            let tool_defs_ref = tool_defs.clone();
-            let config_ref = config.clone();
-            let accumulated = {
-                let request_messages = &working;
-                async move {
-                    let start = std::time::Instant::now();
-                    let mut stream = match self
-                        .provider
-                        .chat_completion_stream(request_messages, &tool_defs_ref, &config_ref)
-                        .await
-                    {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::Span::current().record("otel.status_code", "ERROR");
-                            if let Some(m) = &self.metrics {
-                                m.record_llm_error();
-                            }
-                            handler_ref.on_error(&e).await;
-                            return Err(e);
-                        }
-                    };
-                    let acc = match self.consume_stream(&mut stream, &handler_ref).await {
-                        Ok(acc) => acc,
-                        Err(e) => {
-                            if let Some(m) = &self.metrics {
-                                m.record_llm_error();
-                            }
-                            return Err(e);
-                        }
-                    };
-                    if let Some(m) = &self.metrics {
-                        m.record_llm_request(
-                            start.elapsed().as_secs_f64() * 1000.0,
-                            acc.input_tokens.unwrap_or(0) as u64,
-                            acc.output_tokens.unwrap_or(0) as u64,
-                        );
-                    }
-                    if let Some(t) = acc.input_tokens {
-                        tracing::Span::current().record("llm.input_tokens", t);
-                    }
-                    if let Some(t) = acc.output_tokens {
-                        tracing::Span::current().record("llm.output_tokens", t);
-                    }
-                    tracing::Span::current().record("llm.stop_reason", acc.stop_reason.as_str());
-                    Ok(acc)
-                }
-                .instrument(call_span)
-                .await?
-            };
-
-            if accumulated.input_tokens.is_some() || accumulated.output_tokens.is_some() {
-                Self::accumulate_usage(
-                    &mut usage,
-                    Some(&UsageStats {
-                        input_tokens: accumulated.input_tokens.unwrap_or(0),
-                        output_tokens: accumulated.output_tokens.unwrap_or(0),
-                        total_tokens: accumulated.input_tokens.unwrap_or(0)
-                            + accumulated.output_tokens.unwrap_or(0),
-                        thinking_tokens: accumulated.thinking_tokens,
-                        cache_read_tokens: accumulated.cache_read_tokens,
-                        cache_creation_tokens: accumulated.cache_creation_tokens,
-                    }),
-                );
-            }
-
-            match accumulated.stop_reason {
-                StopReason::ToolUse => {
-                    let content_blocks = Self::build_tool_use_content(
-                        &accumulated.thinking_blocks,
-                        &accumulated.text,
-                        &accumulated.tool_calls,
-                    );
-                    working.push(ConversationMessage {
-                        role: Role::Assistant,
-                        content: content_blocks,
-                    });
-
-                    let tool_uses = Self::parse_streamed_tool_calls(accumulated.tool_calls);
-                    let tool_messages = self.execute_tools(tool_uses).await;
-                    working.extend(tool_messages);
-                }
-                StopReason::EndTurn | StopReason::MaxTokens | StopReason::Unknown(_) => {
-                    let span = tracing::Span::current();
-                    span.record("llm.stop_reason", accumulated.stop_reason.as_str());
-                    span.record("llm.iterations", llm_calls);
-                    if let Some(tokens) = accumulated.input_tokens {
-                        self.last_turn_input_tokens.store(tokens, Ordering::Relaxed);
-                    }
-                    working.push(ConversationMessage {
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::Text {
-                            text: accumulated.text.clone(),
-                        }],
-                    });
-                    handler.on_complete().await?;
-                    return Ok(AgentResponse {
-                        text: accumulated.text,
-                        new_messages: working.split_off(new_start),
-                        stop_reason: accumulated.stop_reason,
-                        usage,
-                        llm_calls,
-                        thinking: None,
-                    });
-                }
-            }
-        }
-
-        Err(KovaError::MaxIterations(self.max_iterations))
-    }
 
     // ── Provider helpers ──────────────────────────────────────────────
 
@@ -892,34 +635,6 @@ impl Agent {
     }
 
     // ── Session helpers ───────────────────────────────────────────────
-
-    fn user_message(text: &str) -> ConversationMessage {
-        ConversationMessage {
-            role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-        }
-    }
-
-    /// Persist a completed turn: the user message followed by everything the
-    /// turn produced. Called only after the turn succeeds, so a failed turn
-    /// never leaves partial state (dangling user messages, orphaned
-    /// tool-use blocks) in the store.
-    async fn persist_turn(
-        &self,
-        conversation_id: &str,
-        user_msg: ConversationMessage,
-        new_messages: &[ConversationMessage],
-    ) -> Result<(), KovaError> {
-        self.memory.add_message(conversation_id, user_msg).await?;
-        for msg in new_messages {
-            self.memory
-                .add_message(conversation_id, msg.clone())
-                .await?;
-        }
-        Ok(())
-    }
 
     /// Build the request prefix: system prompt (if set) followed by the
     /// caller-supplied conversation.
@@ -1190,87 +905,6 @@ impl Agent {
 
     // ── Streaming helpers ─────────────────────────────────────────────
 
-    async fn consume_stream(
-        &self,
-        stream: &mut (impl futures::Stream<Item = Result<StreamEvent, KovaError>> + Unpin),
-        handler: &Arc<dyn StreamingHandler>,
-    ) -> Result<StreamAccumulator, KovaError> {
-        let mut acc = StreamAccumulator::default();
-
-        while let Some(event_result) = stream.next().await {
-            match event_result {
-                Ok(event) => {
-                    if let Err(e) = handler.on_chunk(&event).await {
-                        handler.on_error(&e).await;
-                        return Err(e);
-                    }
-
-                    match &event {
-                        StreamEvent::ContentDelta { text } => acc.text.push_str(text),
-                        StreamEvent::ToolUseDelta {
-                            id,
-                            name,
-                            input_delta,
-                            provider_metadata,
-                            index,
-                        } => {
-                            acc.merge_tool_use_delta(
-                                id,
-                                name.as_deref(),
-                                input_delta.as_deref(),
-                                provider_metadata,
-                                *index,
-                            );
-                        }
-                        StreamEvent::StopEvent { stop_reason } => {
-                            acc.stop_reason = stop_reason.clone();
-                        }
-                        StreamEvent::UsageEvent {
-                            input_tokens,
-                            output_tokens,
-                            thinking_tokens,
-                            cache_read_tokens,
-                            cache_creation_tokens,
-                        } => {
-                            acc.input_tokens = Some(*input_tokens);
-                            acc.output_tokens = Some(*output_tokens);
-                            acc.thinking_tokens = *thinking_tokens;
-                            acc.cache_read_tokens = *cache_read_tokens;
-                            acc.cache_creation_tokens = *cache_creation_tokens;
-                        }
-                        StreamEvent::ThinkingBlock {
-                            thinking,
-                            signature,
-                        } => {
-                            acc.thinking_blocks.push(ContentBlock::Thinking {
-                                thinking: thinking.clone(),
-                                signature: signature.clone(),
-                            });
-                        }
-                        StreamEvent::ThinkingDelta { .. } => {}
-                        StreamEvent::Error { message } => {
-                            let err = KovaError::Stream(message.clone());
-                            handler.on_error(&err).await;
-                            return Err(err);
-                        }
-                    }
-                }
-                Err(e) => {
-                    handler.on_error(&e).await;
-                    return Err(e);
-                }
-            }
-        }
-
-        // Gemini sends finishReason in the *last* chunk, which may not contain
-        // function calls. Prefer content: if we accumulated any tool calls,
-        // the stop reason must be ToolUse regardless of what StopEvent said.
-        if !acc.tool_calls.is_empty() {
-            acc.stop_reason = StopReason::ToolUse;
-        }
-
-        Ok(acc)
-    }
 }
 
 // ── Private streaming types ───────────────────────────────────────────

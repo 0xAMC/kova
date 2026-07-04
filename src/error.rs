@@ -77,12 +77,6 @@ pub enum KovaError {
     #[error("MCP error: {0}")]
     Mcp(String),
 
-    #[error("Memory error: {0}")]
-    Memory(String),
-
-    #[error("Orchestration error: {0}")]
-    Orchestration(String),
-
     #[error("Build error: {0}")]
     Build(String),
 
