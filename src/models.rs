@@ -89,8 +89,10 @@ pub struct UsageStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_tokens: Option<u32>,
     /// Input tokens served from the provider's prompt cache (~10% price), when
-    /// reported. A subset of the prompt, *not* included in `input_tokens` on
-    /// providers that report them separately (Anthropic). `None` = unknown.
+    /// reported. Never included in `input_tokens` — kova normalizes providers
+    /// that fold cached tokens into their prompt count (OpenAI), so
+    /// `input_tokens + cache_read_tokens` is always the full prompt.
+    /// `None` = unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_tokens: Option<u32>,
     /// Input tokens written to the provider's prompt cache this call (billed

@@ -21,6 +21,7 @@ All notable changes to the `kova-sdk` library are documented here.
 - `McpClient::tools_call_with_timeout(name, args, timeout)` — per-call timeout override for tools known to run long (or that must fail fast).
 
 ### Changed (breaking)
+- OpenAI-compatible usage now reports `input_tokens` **excluding** cached prompt tokens (they arrive in `cache_read_tokens` instead), so `input_tokens + cache_read_tokens` is the full prompt on every provider — the uniform contract Anthropic and Bedrock already follow natively.
 - `KovaError::Provider` gained the required `class` field; construct via the new constructors instead of struct literals.
 - `KovaError::is_retryable()` now derives from the class (`RateLimited`/`Overloaded`); behavior is unchanged for all previously retryable statuses.
 - MCP transport-level I/O failures (dead child process, broken HTTP stream) now surface as `KovaError::Connection` instead of `KovaError::Mcp`; server-reported JSON-RPC errors remain `Mcp`. Callers matching on `Mcp` for connectivity problems must match `Connection`.

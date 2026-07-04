@@ -179,17 +179,23 @@ pub(crate) fn format_response(
         }
     }
 
-    let usage = oai_resp.usage.map(|u| UsageStats {
-        input_tokens: u.prompt_tokens,
-        output_tokens: u.completion_tokens,
-        total_tokens: u.total_tokens,
-        thinking_tokens: u
-            .completion_tokens_details
-            .as_ref()
-            .map(|d| d.reasoning_tokens),
-        cache_read_tokens: u.prompt_tokens_details.as_ref().map(|d| d.cached_tokens),
-        // OpenAI's cache is automatic; writes aren't reported separately.
-        cache_creation_tokens: None,
+    // OpenAI's prompt_tokens INCLUDES cached tokens; kova's contract is that
+    // input_tokens counts only non-cached input (as Anthropic and Bedrock
+    // report natively), so subtract to keep the semantic uniform.
+    let usage = oai_resp.usage.map(|u| {
+        let cached = u.prompt_tokens_details.as_ref().map(|d| d.cached_tokens);
+        UsageStats {
+            input_tokens: u.prompt_tokens.saturating_sub(cached.unwrap_or(0)),
+            output_tokens: u.completion_tokens,
+            total_tokens: u.total_tokens,
+            thinking_tokens: u
+                .completion_tokens_details
+                .as_ref()
+                .map(|d| d.reasoning_tokens),
+            cache_read_tokens: cached,
+            // OpenAI's cache is automatic; writes aren't reported separately.
+            cache_creation_tokens: None,
+        }
     });
 
     Ok(ModelResponse {
@@ -216,17 +222,16 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
     let mut events = Vec::new();
 
     if let Some(usage) = chunk.usage {
+        let cached = usage.prompt_tokens_details.as_ref().map(|d| d.cached_tokens);
         events.push(StreamEvent::UsageEvent {
-            input_tokens: usage.prompt_tokens,
+            // See format_response: input_tokens counts non-cached input only.
+            input_tokens: usage.prompt_tokens.saturating_sub(cached.unwrap_or(0)),
             output_tokens: usage.completion_tokens,
             thinking_tokens: usage
                 .completion_tokens_details
                 .as_ref()
                 .map(|d| d.reasoning_tokens),
-            cache_read_tokens: usage
-                .prompt_tokens_details
-                .as_ref()
-                .map(|d| d.cached_tokens),
+            cache_read_tokens: cached,
             cache_creation_tokens: None,
         });
     }
