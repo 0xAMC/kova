@@ -23,13 +23,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ── Failing mock provider ──────────────────────────────────────────
 
-
 /// Run a single-user-message turn and return the assistant text (replaces the
 /// removed stateful `Agent::chat`; the agent is stateless).
-async fn run_text(
-    agent: &kova_sdk::agent::Agent,
-    text: &str,
-) -> Result<String, KovaError> {
+async fn run_text(agent: &kova_sdk::agent::Agent, text: &str) -> Result<String, KovaError> {
     let messages = [ConversationMessage {
         role: Role::User,
         content: vec![ContentBlock::Text {

@@ -170,8 +170,8 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
                     input_tokens,
                     output_tokens,
                     total_tokens: input_tokens + output_tokens,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    cache_write_input_tokens: None,
                 },
             };
             let expected = StreamEvent::UsageEvent {
@@ -213,8 +213,8 @@ fn fake_response(content: Vec<BedrockContentBlock>) -> BedrockConverseResponse {
             input_tokens: 1,
             output_tokens: 1,
             total_tokens: 2,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     }
 }
@@ -233,8 +233,8 @@ fn response_with_stop_reason(stop_reason: &str) -> BedrockConverseResponse {
             input_tokens: 1,
             output_tokens: 1,
             total_tokens: 2,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     }
 }
@@ -400,8 +400,8 @@ fn test_format_response_deserialization() {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -621,8 +621,8 @@ fn test_format_stream_event_metadata_emits_usage() {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     assert_eq!(
@@ -725,8 +725,8 @@ fn test_format_response_reasoning_content_populates_thinking_field() {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -770,8 +770,8 @@ fn test_format_response_multiple_reasoning_blocks_joined() {
             input_tokens: 5,
             output_tokens: 3,
             total_tokens: 8,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -800,8 +800,8 @@ fn test_format_response_reasoning_content_excluded_from_content_blocks() {
             input_tokens: 2,
             output_tokens: 1,
             total_tokens: 3,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -834,8 +834,8 @@ fn test_format_response_empty_reasoning_text_not_included_in_thinking() {
             input_tokens: 2,
             output_tokens: 1,
             total_tokens: 3,
-                cache_read_input_tokens: None,
-                cache_write_input_tokens: None,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -869,7 +869,10 @@ fn cache_flag_places_cache_points_and_usage_maps_cache_tokens() {
     assert_eq!(system[1]["cachePoint"]["type"], "default");
     // …and after the last message's content.
     let last_content = body["messages"][0]["content"].as_array().unwrap();
-    assert_eq!(last_content.last().unwrap()["cachePoint"]["type"], "default");
+    assert_eq!(
+        last_content.last().unwrap()["cachePoint"]["type"],
+        "default"
+    );
 
     // Off by default: no cachePoint anywhere.
     let request = format_request(&messages, &[], &InferenceConfig::default(), None, false);

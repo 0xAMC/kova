@@ -110,8 +110,6 @@ impl AgentBuilder {
         self
     }
 
-
-
     /// Connect an MCP client, discover its tools, and register them.
     ///
     /// The discovered MCP tools are wrapped as [`McpTool`] instances and

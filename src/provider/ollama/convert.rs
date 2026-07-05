@@ -766,7 +766,8 @@ mod tests {
     #[test]
     fn response_format_maps_to_format_field() {
         let provider_config = OllamaProviderConfig::new("llama3.2");
-        let schema = serde_json::json!({"type": "object", "properties": {"x": {"type": "integer"}}});
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"x": {"type": "integer"}}});
         let config = InferenceConfig {
             response_format: Some(crate::models::ResponseFormat::new(schema.clone())),
             ..Default::default()
@@ -774,7 +775,13 @@ mod tests {
         let req = format_request(&[], &[], &config, &provider_config, false);
         assert_eq!(req.format, Some(schema));
 
-        let req = format_request(&[], &[], &InferenceConfig::default(), &provider_config, false);
+        let req = format_request(
+            &[],
+            &[],
+            &InferenceConfig::default(),
+            &provider_config,
+            false,
+        );
         assert!(req.format.is_none());
     }
 }

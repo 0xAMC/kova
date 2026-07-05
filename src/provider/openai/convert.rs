@@ -222,7 +222,10 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
     let mut events = Vec::new();
 
     if let Some(usage) = chunk.usage {
-        let cached = usage.prompt_tokens_details.as_ref().map(|d| d.cached_tokens);
+        let cached = usage
+            .prompt_tokens_details
+            .as_ref()
+            .map(|d| d.cached_tokens);
         events.push(StreamEvent::UsageEvent {
             // See format_response: input_tokens counts non-cached input only.
             input_tokens: usage.prompt_tokens.saturating_sub(cached.unwrap_or(0)),

@@ -183,9 +183,6 @@ mod stateless_run {
         let response = agent.run(&history).await.unwrap();
         assert_eq!(response.text, "first");
     }
-
-
-
 }
 
 // ── Retry layer ────────────────────────────────────────────────────

@@ -1255,7 +1255,10 @@ mod tests {
         };
         let req = format_request(&[user_msg("hi")], &[], &config, None);
         let gen_cfg = req.generation_config.expect("generation config set");
-        assert_eq!(gen_cfg.response_mime_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            gen_cfg.response_mime_type.as_deref(),
+            Some("application/json")
+        );
         let schema = gen_cfg.response_schema.expect("schema present");
         // Sanitizer strips additionalProperties (unsupported by Gemini).
         assert!(schema.get("additionalProperties").is_none());

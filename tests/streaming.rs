@@ -262,5 +262,8 @@ async fn run_stream_propagates_provider_stream_error() {
             saw_error = true;
         }
     }
-    assert!(saw_error, "provider stream error should surface to the caller");
+    assert!(
+        saw_error,
+        "provider stream error should surface to the caller"
+    );
 }
