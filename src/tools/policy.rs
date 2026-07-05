@@ -143,6 +143,11 @@ pub struct WebPolicy {
     pub https_only: bool,
     /// When non-empty, a URL must match one of these globs to be fetched.
     pub allowed_urls: Vec<glob::Pattern>,
+    /// Deny-by-default egress: require every URL to match `allowed_urls` even
+    /// when that list is empty (so an empty allowlist blocks *all* web access).
+    /// Off by default (empty `allowed_urls` allows any URL, subject to the
+    /// scheme/host checks).
+    pub allowlist_only: bool,
     /// A URL matching any of these globs is always rejected (wins over allow).
     pub denied_urls: Vec<glob::Pattern>,
     /// Cap on bytes downloaded before the body is truncated.
@@ -161,6 +166,7 @@ impl Default for WebPolicy {
             allow_private_hosts: false,
             https_only: true,
             allowed_urls: Vec::new(),
+            allowlist_only: false,
             denied_urls: Vec::new(),
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             max_content_chars: DEFAULT_MAX_CONTENT_CHARS,
@@ -188,10 +194,17 @@ impl WebPolicy {
                 "Refusing to fetch '{as_str}': it matches a denied URL pattern ('{deny}')."
             ));
         }
-        if !self.allowed_urls.is_empty() && !self.allowed_urls.iter().any(|p| p.matches(as_str)) {
-            return Err(format!(
-                "Refusing to fetch '{as_str}': it is not in the allowlist."
-            ));
+        if (self.allowlist_only || !self.allowed_urls.is_empty())
+            && !self.allowed_urls.iter().any(|p| p.matches(as_str))
+        {
+            return Err(if self.allowed_urls.is_empty() {
+                format!(
+                    "Refusing to fetch '{as_str}': web egress is locked down \
+                     (allowlist-only, and the allowlist is empty)."
+                )
+            } else {
+                format!("Refusing to fetch '{as_str}': it is not in the allowlist.")
+            });
         }
         Ok(())
     }
@@ -312,6 +325,31 @@ mod tests {
             policy
                 .check_url(&reqwest::Url::parse("https://other.com/ok").unwrap())
                 .is_err()
+        );
+    }
+
+    #[cfg(feature = "web-tools")]
+    #[test]
+    fn allowlist_only_with_empty_list_denies_all() {
+        let policy = WebPolicy {
+            allowlist_only: true,
+            ..WebPolicy::default()
+        };
+        let err = policy
+            .check_url(&reqwest::Url::parse("https://example.com/ok").unwrap())
+            .unwrap_err();
+        assert!(err.contains("locked down"));
+
+        // With a matching allowlist entry, the same mode permits it.
+        let policy = WebPolicy {
+            allowlist_only: true,
+            allowed_urls: vec![glob::Pattern::new("https://example.com/*").unwrap()],
+            ..WebPolicy::default()
+        };
+        assert!(
+            policy
+                .check_url(&reqwest::Url::parse("https://example.com/ok").unwrap())
+                .is_ok()
         );
     }
 }
