@@ -7,7 +7,7 @@ use kova_sdk::error::KovaError;
 use kova_sdk::models::*;
 
 use mock::provider::{
-    CapturingMockProvider, MockLlmProvider, make_text_response, make_tool_call_response,
+    CapturingMockProvider, MockLlmProvider, make_text_response, make_tool_call_response, run_text,
 };
 use mock::tool::MockTool;
 
@@ -35,7 +35,7 @@ async fn single_tool_call_executes_and_returns_final_text() {
         .build()
         .unwrap();
 
-    let reply = agent.chat("conv-1", "say hi").await.unwrap();
+    let reply = run_text(&agent, "say hi").await.unwrap();
 
     assert_eq!(reply, "Hello, world!");
     assert_eq!(tool.call_count(), 1);
@@ -62,7 +62,7 @@ async fn multi_turn_tool_calls() {
         .build()
         .unwrap();
 
-    let reply = agent.chat("conv-1", "do the thing").await.unwrap();
+    let reply = run_text(&agent, "do the thing").await.unwrap();
 
     assert_eq!(reply, "all done");
     assert_eq!(tool_a.call_count(), 1);
@@ -84,7 +84,7 @@ async fn tool_not_found_sends_error_to_llm() {
         .build()
         .unwrap();
 
-    let reply = agent.chat("conv-1", "use a tool").await.unwrap();
+    let reply = run_text(&agent, "use a tool").await.unwrap();
     assert_eq!(reply, "I see the tool was not found");
 
     let requests = provider.captured_requests().await;
@@ -138,7 +138,7 @@ async fn tool_execution_error_forwarded_to_llm() {
         .build()
         .unwrap();
 
-    let reply = agent.chat("conv-1", "call the tool").await.unwrap();
+    let reply = run_text(&agent, "call the tool").await.unwrap();
     assert_eq!(reply, "I handled the error");
     assert_eq!(tool.call_count(), 1);
 
@@ -189,7 +189,7 @@ async fn max_iterations_terminates_tool_loop() {
         .build()
         .unwrap();
 
-    let result = agent.chat("conv-1", "loop forever").await;
+    let result = run_text(&agent, "loop forever").await;
 
     match result {
         Err(KovaError::MaxIterations(n)) => assert_eq!(n, 3),
@@ -223,7 +223,7 @@ async fn multiple_tool_calls_in_single_response() {
         .build()
         .unwrap();
 
-    let reply = agent.chat("conv-1", "use both").await.unwrap();
+    let reply = run_text(&agent, "use both").await.unwrap();
     assert_eq!(reply, "both tools done");
     assert_eq!(tool_a.call_count(), 1);
     assert_eq!(tool_b.call_count(), 1);
@@ -267,7 +267,7 @@ async fn tool_call_with_empty_registry_sends_not_found() {
         .build()
         .unwrap();
 
-    let reply = agent.chat("conv-1", "try a tool").await.unwrap();
+    let reply = run_text(&agent, "try a tool").await.unwrap();
     assert_eq!(reply, "ok, no tools");
 
     let requests = provider.captured_requests().await;
@@ -357,7 +357,7 @@ mod approval_caching {
         ));
 
         let agent = two_round_agent(provider, tool.clone(), handler.clone());
-        let reply = agent.chat("conv-1", "go").await.unwrap();
+        let reply = run_text(&agent, "go").await.unwrap();
 
         assert_eq!(reply, "done");
         assert_eq!(tool.call_count(), 2, "both invocations execute");
@@ -375,7 +375,7 @@ mod approval_caching {
         let handler = Arc::new(CountingApprovalHandler::new(ApprovalDecision::DeniedAlways));
 
         let agent = two_round_agent(provider, tool.clone(), handler.clone());
-        let reply = agent.chat("conv-1", "go").await.unwrap();
+        let reply = run_text(&agent, "go").await.unwrap();
 
         assert_eq!(reply, "done");
         assert_eq!(tool.call_count(), 0, "denied tool never executes");
@@ -393,7 +393,7 @@ mod approval_caching {
         let handler = Arc::new(CountingApprovalHandler::new(ApprovalDecision::Approved));
 
         let agent = two_round_agent(provider, tool.clone(), handler.clone());
-        agent.chat("conv-1", "go").await.unwrap();
+        run_text(&agent, "go").await.unwrap();
 
         assert_eq!(tool.call_count(), 2);
         assert_eq!(handler.call_count(), 2);
@@ -420,7 +420,7 @@ async fn agent_records_metrics_when_collector_registered() {
         .build()
         .unwrap();
 
-    agent.chat("conv-1", "go").await.unwrap();
+    run_text(&agent, "go").await.unwrap();
 
     assert_eq!(
         metrics.llm_request_count(),

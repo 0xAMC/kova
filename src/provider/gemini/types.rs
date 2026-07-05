@@ -75,6 +75,11 @@ pub(crate) struct GeminiGenerationConfig {
     pub(crate) stop_sequences: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) thinking_config: Option<GeminiThinkingConfig>,
+    /// Structured output: `"application/json"` + a response schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_mime_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_schema: Option<serde_json::Value>,
 }
 
 /// Controls chain-of-thought budget for thinking-capable Gemini models.

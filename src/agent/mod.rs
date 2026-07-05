@@ -10,17 +10,16 @@ use tokio::sync::Semaphore;
 use tracing::Instrument;
 
 use crate::error::KovaError;
-use crate::memory::MemoryStore;
 use crate::models::{
-    ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
-    StreamEvent, ToolDefinition, UsageStats,
+    ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, ResponseFormat, Role,
+    StopReason, StreamEvent, ToolDefinition, UsageStats,
 };
 use crate::provider::{LlmProvider, RetryConfig};
-use crate::streaming::StreamingHandler;
 use crate::telemetry::MetricsCollector;
 use crate::tool::ToolLifecycleHook;
 use crate::tool::approval::{ApprovalDecision, ToolApprovalHandler};
 use crate::tool::registry::ToolRegistry;
+use tokio_util::sync::CancellationToken;
 
 /// The result of one complete agentic turn.
 ///
@@ -78,18 +77,16 @@ pub enum AgentEvent {
 /// safely shared across async tasks.
 ///
 /// The core primitive is [`run`](Self::run): caller-supplied history in,
-/// [`AgentResponse`] out, no hidden state. [`chat`](Self::chat) and
-/// [`chat_response`](Self::chat_response) layer conversation persistence on
-/// top via the configured [`MemoryStore`].
+/// [`AgentResponse`] out, no hidden state. The agent holds no conversation
+/// state — the host owns and persists history.
 pub struct Agent {
     provider: Arc<dyn LlmProvider>,
     tool_registry: ToolRegistry,
-    memory: Arc<dyn MemoryStore>,
     system_prompt: Option<String>,
     max_iterations: usize,
+    context_budget: Option<u32>,
     max_concurrent_tools: usize,
     inference_config: InferenceConfig,
-    streaming_handler: Option<Arc<dyn StreamingHandler>>,
     approval_handler: Option<Arc<dyn ToolApprovalHandler>>,
     lifecycle_hook: Option<Arc<dyn ToolLifecycleHook>>,
     /// Remembered `ApprovedForSession` / `DeniedAlways` decisions, keyed by
@@ -115,8 +112,7 @@ impl Agent {
 
     /// Run one agentic turn over caller-supplied conversation history.
     ///
-    /// This is the stateless core primitive: nothing is read from or written
-    /// to the memory store. `messages` is the conversation so far (ending
+    /// `messages` is the conversation so far (ending
     /// with the latest user message); the returned
     /// [`AgentResponse::new_messages`] contains everything the turn produced,
     /// for the caller to append to their own history.
@@ -126,13 +122,28 @@ impl Agent {
     /// (concurrently, bounded by `max_concurrent_tools`), and loops until no
     /// tool calls remain or `max_iterations` tool rounds are exhausted.
     pub async fn run(&self, messages: &[ConversationMessage]) -> Result<AgentResponse, KovaError> {
+        self.run_cancellable(messages, CancellationToken::new())
+            .await
+    }
+
+    /// Like [`run`](Self::run), aborting cleanly when `cancel` fires.
+    ///
+    /// Cancellation is checked between loop iterations and races the in-flight
+    /// provider call and tool executions; a cancelled turn returns
+    /// [`KovaError::Cancelled`] and produces no messages (in-flight tool
+    /// futures are dropped, killing spawned processes).
+    pub async fn run_cancellable(
+        &self,
+        messages: &[ConversationMessage],
+        cancel: CancellationToken,
+    ) -> Result<AgentResponse, KovaError> {
         let span = tracing::info_span!(
             "agent.run",
             otel.status_code = tracing::field::Empty,
             llm.stop_reason = tracing::field::Empty,
             llm.iterations = tracing::field::Empty,
         );
-        self.run_inner(messages, self.inference_config.clone())
+        self.run_inner(messages, self.inference_config.clone(), cancel)
             .instrument(span)
             .await
     }
@@ -163,8 +174,39 @@ impl Agent {
             stop_sequences: overrides
                 .stop_sequences
                 .or_else(|| self.inference_config.stop_sequences.clone()),
+            response_format: overrides
+                .response_format
+                .or_else(|| self.inference_config.response_format.clone()),
         };
-        self.run_inner(messages, config).instrument(span).await
+        self.run_inner(messages, config, CancellationToken::new())
+            .instrument(span)
+            .await
+    }
+
+    /// Run one turn with the final text constrained to `format`'s JSON schema,
+    /// parsed into `T`.
+    ///
+    /// Returns the parsed value alongside the full [`AgentResponse`] (for
+    /// usage accounting and history persistence). A final text that fails to
+    /// parse as `T` is an error — with a schema-native provider that only
+    /// happens on truncation (`max_tokens`) or refusal.
+    pub async fn run_structured<T: serde::de::DeserializeOwned>(
+        &self,
+        messages: &[ConversationMessage],
+        format: ResponseFormat,
+    ) -> Result<(T, AgentResponse), KovaError> {
+        let overrides = InferenceConfig {
+            response_format: Some(format),
+            ..Default::default()
+        };
+        let response = self.run_with_config(messages, overrides).await?;
+        let value: T = serde_json::from_str(response.text.trim()).map_err(|e| {
+            KovaError::provider_invalid(format!(
+                "structured output did not match the requested schema: {e} (text: {})",
+                &response.text.chars().take(200).collect::<String>()
+            ))
+        })?;
+        Ok((value, response))
     }
 
     /// Run one agentic turn over caller-supplied history, yielding
@@ -174,8 +216,7 @@ impl Agent {
     /// arrive as deltas, tool execution is announced via
     /// `ToolCallStarted`/`ToolCallFinished`, and the final event is
     /// `TurnCompleted` carrying the full [`AgentResponse`] (including
-    /// `new_messages` for the caller to persist). No `StreamingHandler`
-    /// needs to be configured and nothing touches the memory store.
+    /// `new_messages` for the caller to persist).
     ///
     /// ```ignore
     /// let mut events = std::pin::pin!(agent.run_stream(&history));
@@ -191,25 +232,38 @@ impl Agent {
         &'a self,
         messages: &'a [ConversationMessage],
     ) -> impl futures::Stream<Item = Result<AgentEvent, KovaError>> + Send + 'a {
+        self.run_stream_cancellable(messages, CancellationToken::new())
+    }
+
+    /// Like [`run_stream`](Self::run_stream), aborting cleanly when `cancel`
+    /// fires: the stream yields [`KovaError::Cancelled`] and ends. Cancellation
+    /// races the in-flight provider stream and tool executions, so a stop takes
+    /// effect mid-response, not just between iterations.
+    pub fn run_stream_cancellable<'a>(
+        &'a self,
+        messages: &'a [ConversationMessage],
+        cancel: CancellationToken,
+    ) -> impl futures::Stream<Item = Result<AgentEvent, KovaError>> + Send + 'a {
         async_stream::try_stream! {
             let tool_defs = self.tool_registry.tool_definitions();
             let config = self.inference_config.clone();
 
             let mut working = self.seed_messages(messages);
             let new_start = working.len();
-            let mut usage = UsageStats {
-                input_tokens: 0,
-                output_tokens: 0,
-                total_tokens: 0,
-            thinking_tokens: None,
-            };
+            let mut usage = UsageStats::default();
             for iteration in 0..=self.max_iterations {
+                if cancel.is_cancelled() {
+                    Err(KovaError::Cancelled)?;
+                }
+                self.check_context_budget(&working, &tool_defs)?;
                 let llm_calls = iteration as u64 + 1;
 
                 let start = std::time::Instant::now();
-                let stream_result = self
-                    .open_stream_with_retry(&working, &tool_defs, &config)
-                    .await;
+                let stream_result = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => Err(KovaError::Cancelled),
+                    r = self.open_stream_with_retry(&working, &tool_defs, &config) => r,
+                };
                 if stream_result.is_err()
                     && let Some(m) = &self.metrics
                 {
@@ -218,7 +272,20 @@ impl Agent {
                 let mut stream = stream_result?;
 
                 let mut acc = StreamAccumulator::default();
-                while let Some(event_result) = stream.next().await {
+                loop {
+                    // Cancellation races the next stream event so a stop takes
+                    // effect mid-response; it surfaces below as Cancelled.
+                    let next = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => None,
+                        n = stream.next() => n,
+                    };
+                    let Some(event_result) = next else {
+                        if cancel.is_cancelled() {
+                            Err(KovaError::Cancelled)?;
+                        }
+                        break;
+                    };
                     match event_result {
                         Ok(event) => match &event {
                             StreamEvent::ContentDelta { text } => {
@@ -254,10 +321,23 @@ impl Agent {
                                 input_tokens,
                                 output_tokens,
                                 thinking_tokens,
+                                cache_read_tokens,
+                                cache_creation_tokens,
                             } => {
                                 acc.input_tokens = Some(*input_tokens);
                                 acc.output_tokens = Some(*output_tokens);
                                 acc.thinking_tokens = *thinking_tokens;
+                                acc.cache_read_tokens = *cache_read_tokens;
+                                acc.cache_creation_tokens = *cache_creation_tokens;
+                            }
+                            StreamEvent::ThinkingBlock {
+                                thinking,
+                                signature,
+                            } => {
+                                acc.thinking_blocks.push(ContentBlock::Thinking {
+                                    thinking: thinking.clone(),
+                                    signature: signature.clone(),
+                                });
                             }
                             StreamEvent::Error { message } => {
                                 if let Some(m) = &self.metrics {
@@ -293,13 +373,15 @@ impl Agent {
                         total_tokens: acc.input_tokens.unwrap_or(0)
                             + acc.output_tokens.unwrap_or(0),
                         thinking_tokens: acc.thinking_tokens,
+                        cache_read_tokens: acc.cache_read_tokens,
+                        cache_creation_tokens: acc.cache_creation_tokens,
                     }),
                 );
 
                 match acc.stop_reason {
                     StopReason::ToolUse => {
                         let content_blocks =
-                            Self::build_tool_use_content(&acc.text, &acc.tool_calls);
+                            Self::build_tool_use_content(&acc.thinking_blocks, &acc.text, &acc.tool_calls);
                         working.push(ConversationMessage {
                             role: Role::Assistant,
                             content: content_blocks,
@@ -317,7 +399,16 @@ impl Agent {
                                 input: input.clone(),
                             };
                         }
-                        let tool_messages = self.execute_tools(tool_uses).await;
+                        // Dropping the in-flight futures on cancel kills any
+                        // spawned tool processes (`kill_on_drop`).
+                        let tool_messages = tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => None,
+                            msgs = self.execute_tools(tool_uses) => Some(msgs),
+                        };
+                        let Some(tool_messages) = tool_messages else {
+                            return Err(KovaError::Cancelled)?;
+                        };
                         for msg in &tool_messages {
                             for block in &msg.content {
                                 if let ContentBlock::ToolResult {
@@ -369,100 +460,6 @@ impl Agent {
         }
     }
 
-    /// Send a user message in a persisted conversation and return the
-    /// assistant's response text.
-    ///
-    /// Convenience wrapper over [`run`](Self::run) backed by the configured
-    /// [`MemoryStore`]: history is loaded, the turn is executed, and — only
-    /// if the turn succeeds — the user message and all produced messages are
-    /// persisted. A failed turn leaves the conversation unchanged.
-    pub async fn chat(
-        &self,
-        conversation_id: &str,
-        user_message: &str,
-    ) -> Result<String, KovaError> {
-        Ok(self
-            .chat_response(conversation_id, user_message)
-            .await?
-            .text)
-    }
-
-    /// Like [`chat`](Self::chat), but returns the full [`AgentResponse`]
-    /// (usage, stop reason, produced messages) instead of just the text.
-    pub async fn chat_response(
-        &self,
-        conversation_id: &str,
-        user_message: &str,
-    ) -> Result<AgentResponse, KovaError> {
-        let span = tracing::info_span!(
-            "agent.chat",
-            conversation_id = conversation_id,
-            otel.status_code = tracing::field::Empty,
-        );
-        async {
-            let mut history = self.memory.get_history(conversation_id).await?;
-            let user_msg = Self::user_message(user_message);
-            history.push(user_msg.clone());
-
-            let response = self
-                .run_inner(&history, self.inference_config.clone())
-                .await?;
-
-            self.persist_turn(conversation_id, user_msg, &response.new_messages)
-                .await?;
-            Ok(response)
-        }
-        .instrument(span)
-        .await
-    }
-
-    /// Send a user message and stream the assistant's response via the
-    /// configured [`StreamingHandler`].
-    ///
-    /// Behaves like [`chat`](Self::chat) but uses the provider's streaming
-    /// endpoint. Each chunk is delivered to the handler's `on_chunk` in
-    /// order. Tool-call loops are handled identically to `chat`. Returns
-    /// the accumulated assistant text. Like `chat`, memory is only written
-    /// when the whole turn succeeds.
-    ///
-    /// # Errors
-    ///
-    /// Returns `KovaError::Build` if no streaming handler is configured.
-    pub async fn chat_stream(
-        &self,
-        conversation_id: &str,
-        user_message: &str,
-    ) -> Result<String, KovaError> {
-        let span = tracing::info_span!(
-            "agent.chat_stream",
-            conversation_id = conversation_id,
-            otel.status_code = tracing::field::Empty,
-            llm.stop_reason = tracing::field::Empty,
-            llm.iterations = tracing::field::Empty,
-        );
-        async {
-            let handler = self
-                .streaming_handler
-                .as_ref()
-                .ok_or_else(|| {
-                    KovaError::Build("StreamingHandler is required for chat_stream".into())
-                })?
-                .clone();
-
-            let mut history = self.memory.get_history(conversation_id).await?;
-            let user_msg = Self::user_message(user_message);
-            history.push(user_msg.clone());
-
-            let response = self.run_stream_inner(&history, &handler).await?;
-
-            self.persist_turn(conversation_id, user_msg, &response.new_messages)
-                .await?;
-            Ok(response.text)
-        }
-        .instrument(span)
-        .await
-    }
-
     // ── Non-streaming agentic loop ────────────────────────────────────
 
     // The first provider call is intentionally outside the loop so that
@@ -472,6 +469,7 @@ impl Agent {
         &self,
         messages: &[ConversationMessage],
         config: InferenceConfig,
+        cancel: CancellationToken,
     ) -> Result<AgentResponse, KovaError> {
         let tool_defs = self.tool_registry.tool_definitions();
 
@@ -479,16 +477,14 @@ impl Agent {
         // produces. Messages past `new_start` become `new_messages`.
         let mut working = self.seed_messages(messages);
         let new_start = working.len();
-        let mut usage = UsageStats {
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            thinking_tokens: None,
-        };
+        let mut usage = UsageStats::default();
 
-        let mut response = self
-            .timed_chat_completion(&working, &tool_defs, &config)
-            .await?;
+        self.check_context_budget(&working, &tool_defs)?;
+        let mut response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(KovaError::Cancelled),
+            r = self.timed_chat_completion(&working, &tool_defs, &config) => r?,
+        };
         Self::accumulate_usage(&mut usage, response.usage.as_ref());
 
         let mut llm_calls: u64 = 1;
@@ -501,12 +497,21 @@ impl Agent {
                         content: response.content.clone(),
                     });
                     let tool_uses = Self::extract_tool_uses(&response.content);
-                    let tool_messages = self.execute_tools(tool_uses).await;
+                    // Dropping the in-flight futures on cancel kills any
+                    // spawned tool processes (`kill_on_drop`).
+                    let tool_messages = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(KovaError::Cancelled),
+                        msgs = self.execute_tools(tool_uses) => msgs,
+                    };
                     working.extend(tool_messages);
 
-                    response = self
-                        .timed_chat_completion(&working, &tool_defs, &config)
-                        .await?;
+                    self.check_context_budget(&working, &tool_defs)?;
+                    response = tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return Err(KovaError::Cancelled),
+                        r = self.timed_chat_completion(&working, &tool_defs, &config) => r?,
+                    };
                     Self::accumulate_usage(&mut usage, response.usage.as_ref());
                     llm_calls += 1;
                 }
@@ -517,23 +522,6 @@ impl Agent {
                     if let Some(u) = &response.usage {
                         self.last_turn_input_tokens
                             .store(u.input_tokens, Ordering::Relaxed);
-                    }
-                    // Emit thinking content via the streaming handler so it displays
-                    // in the terminal even in non-streaming mode.
-                    if let (Some(thinking_text), Some(handler)) =
-                        (&response.thinking, &self.streaming_handler)
-                    {
-                        let _ = handler
-                            .on_chunk(&StreamEvent::ThinkingDelta {
-                                text: thinking_text.clone(),
-                            })
-                            .await;
-                        // Empty ContentDelta closes the thinking box without printing anything.
-                        let _ = handler
-                            .on_chunk(&StreamEvent::ContentDelta {
-                                text: String::new(),
-                            })
-                            .await;
                     }
                     let text = Self::collect_text(&response.content);
                     working.push(ConversationMessage {
@@ -556,141 +544,6 @@ impl Agent {
     }
 
     // ── Streaming agentic loop ────────────────────────────────────────
-
-    async fn run_stream_inner(
-        &self,
-        messages: &[ConversationMessage],
-        handler: &Arc<dyn StreamingHandler>,
-    ) -> Result<AgentResponse, KovaError> {
-        let tool_defs = self.tool_registry.tool_definitions();
-        let config = self.inference_config.clone();
-
-        let mut working = self.seed_messages(messages);
-        let new_start = working.len();
-        let mut usage = UsageStats {
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            thinking_tokens: None,
-        };
-
-        let mut llm_calls: u64 = 0;
-
-        for _iteration in 0..=self.max_iterations {
-            llm_calls += 1;
-
-            let call_span = tracing::info_span!(
-                "llm.chat_completion_stream",
-                otel.status_code = tracing::field::Empty,
-                llm.input_tokens = tracing::field::Empty,
-                llm.output_tokens = tracing::field::Empty,
-                llm.stop_reason = tracing::field::Empty,
-            );
-            let handler_ref = handler.clone();
-            let tool_defs_ref = tool_defs.clone();
-            let config_ref = config.clone();
-            let accumulated = {
-                let request_messages = &working;
-                async move {
-                    let start = std::time::Instant::now();
-                    let mut stream = match self
-                        .provider
-                        .chat_completion_stream(request_messages, &tool_defs_ref, &config_ref)
-                        .await
-                    {
-                        Ok(s) => s,
-                        Err(e) => {
-                            tracing::Span::current().record("otel.status_code", "ERROR");
-                            if let Some(m) = &self.metrics {
-                                m.record_llm_error();
-                            }
-                            handler_ref.on_error(&e).await;
-                            return Err(e);
-                        }
-                    };
-                    let acc = match self.consume_stream(&mut stream, &handler_ref).await {
-                        Ok(acc) => acc,
-                        Err(e) => {
-                            if let Some(m) = &self.metrics {
-                                m.record_llm_error();
-                            }
-                            return Err(e);
-                        }
-                    };
-                    if let Some(m) = &self.metrics {
-                        m.record_llm_request(
-                            start.elapsed().as_secs_f64() * 1000.0,
-                            acc.input_tokens.unwrap_or(0) as u64,
-                            acc.output_tokens.unwrap_or(0) as u64,
-                        );
-                    }
-                    if let Some(t) = acc.input_tokens {
-                        tracing::Span::current().record("llm.input_tokens", t);
-                    }
-                    if let Some(t) = acc.output_tokens {
-                        tracing::Span::current().record("llm.output_tokens", t);
-                    }
-                    tracing::Span::current().record("llm.stop_reason", acc.stop_reason.as_str());
-                    Ok(acc)
-                }
-                .instrument(call_span)
-                .await?
-            };
-
-            if accumulated.input_tokens.is_some() || accumulated.output_tokens.is_some() {
-                Self::accumulate_usage(
-                    &mut usage,
-                    Some(&UsageStats {
-                        input_tokens: accumulated.input_tokens.unwrap_or(0),
-                        output_tokens: accumulated.output_tokens.unwrap_or(0),
-                        total_tokens: accumulated.input_tokens.unwrap_or(0)
-                            + accumulated.output_tokens.unwrap_or(0),
-                        thinking_tokens: accumulated.thinking_tokens,
-                    }),
-                );
-            }
-
-            match accumulated.stop_reason {
-                StopReason::ToolUse => {
-                    let content_blocks =
-                        Self::build_tool_use_content(&accumulated.text, &accumulated.tool_calls);
-                    working.push(ConversationMessage {
-                        role: Role::Assistant,
-                        content: content_blocks,
-                    });
-
-                    let tool_uses = Self::parse_streamed_tool_calls(accumulated.tool_calls);
-                    let tool_messages = self.execute_tools(tool_uses).await;
-                    working.extend(tool_messages);
-                }
-                StopReason::EndTurn | StopReason::MaxTokens | StopReason::Unknown(_) => {
-                    let span = tracing::Span::current();
-                    span.record("llm.stop_reason", accumulated.stop_reason.as_str());
-                    span.record("llm.iterations", llm_calls);
-                    if let Some(tokens) = accumulated.input_tokens {
-                        self.last_turn_input_tokens.store(tokens, Ordering::Relaxed);
-                    }
-                    working.push(ConversationMessage {
-                        role: Role::Assistant,
-                        content: vec![ContentBlock::Text {
-                            text: accumulated.text.clone(),
-                        }],
-                    });
-                    handler.on_complete().await?;
-                    return Ok(AgentResponse {
-                        text: accumulated.text,
-                        new_messages: working.split_off(new_start),
-                        stop_reason: accumulated.stop_reason,
-                        usage,
-                        llm_calls,
-                        thinking: None,
-                    });
-                }
-            }
-        }
-
-        Err(KovaError::MaxIterations(self.max_iterations))
-    }
 
     // ── Provider helpers ──────────────────────────────────────────────
 
@@ -783,34 +636,6 @@ impl Agent {
 
     // ── Session helpers ───────────────────────────────────────────────
 
-    fn user_message(text: &str) -> ConversationMessage {
-        ConversationMessage {
-            role: Role::User,
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-            }],
-        }
-    }
-
-    /// Persist a completed turn: the user message followed by everything the
-    /// turn produced. Called only after the turn succeeds, so a failed turn
-    /// never leaves partial state (dangling user messages, orphaned
-    /// tool-use blocks) in the store.
-    async fn persist_turn(
-        &self,
-        conversation_id: &str,
-        user_msg: ConversationMessage,
-        new_messages: &[ConversationMessage],
-    ) -> Result<(), KovaError> {
-        self.memory.add_message(conversation_id, user_msg).await?;
-        for msg in new_messages {
-            self.memory
-                .add_message(conversation_id, msg.clone())
-                .await?;
-        }
-        Ok(())
-    }
-
     /// Build the request prefix: system prompt (if set) followed by the
     /// caller-supplied conversation.
     fn seed_messages(&self, messages: &[ConversationMessage]) -> Vec<ConversationMessage> {
@@ -819,6 +644,23 @@ impl Agent {
             content: vec![ContentBlock::Text { text: p.clone() }],
         });
         system.chain(messages.iter().cloned()).collect()
+    }
+
+    /// Enforce the configured context budget against the working prompt,
+    /// using the offline heuristic (never a network call — this runs before
+    /// every provider call in the loop).
+    fn check_context_budget(
+        &self,
+        working: &[ConversationMessage],
+        tool_defs: &[ToolDefinition],
+    ) -> Result<(), KovaError> {
+        if let Some(budget) = self.context_budget {
+            let measured = crate::provider::heuristic_count_tokens(working, tool_defs);
+            if measured > budget {
+                return Err(KovaError::ContextBudgetExceeded { measured, budget });
+            }
+        }
+        Ok(())
     }
 
     fn accumulate_usage(acc: &mut UsageStats, usage: Option<&UsageStats>) {
@@ -831,6 +673,15 @@ impl Agent {
             if acc.thinking_tokens.is_some() || u.thinking_tokens.is_some() {
                 acc.thinking_tokens =
                     Some(acc.thinking_tokens.unwrap_or(0) + u.thinking_tokens.unwrap_or(0));
+            }
+            if acc.cache_read_tokens.is_some() || u.cache_read_tokens.is_some() {
+                acc.cache_read_tokens =
+                    Some(acc.cache_read_tokens.unwrap_or(0) + u.cache_read_tokens.unwrap_or(0));
+            }
+            if acc.cache_creation_tokens.is_some() || u.cache_creation_tokens.is_some() {
+                acc.cache_creation_tokens = Some(
+                    acc.cache_creation_tokens.unwrap_or(0) + u.cache_creation_tokens.unwrap_or(0),
+                );
             }
         }
     }
@@ -872,8 +723,14 @@ impl Agent {
             .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()))
     }
 
-    fn build_tool_use_content(text: &str, tool_calls: &[StreamedToolCall]) -> Vec<ContentBlock> {
-        let mut blocks = Vec::new();
+    fn build_tool_use_content(
+        thinking_blocks: &[ContentBlock],
+        text: &str,
+        tool_calls: &[StreamedToolCall],
+    ) -> Vec<ContentBlock> {
+        // Thinking blocks come first — Anthropic requires the signed thinking
+        // block to precede the tool_use blocks it reasoned about.
+        let mut blocks = thinking_blocks.to_vec();
         if !text.is_empty() {
             blocks.push(ContentBlock::Text {
                 text: text.to_string(),
@@ -1047,75 +904,6 @@ impl Agent {
     }
 
     // ── Streaming helpers ─────────────────────────────────────────────
-
-    async fn consume_stream(
-        &self,
-        stream: &mut (impl futures::Stream<Item = Result<StreamEvent, KovaError>> + Unpin),
-        handler: &Arc<dyn StreamingHandler>,
-    ) -> Result<StreamAccumulator, KovaError> {
-        let mut acc = StreamAccumulator::default();
-
-        while let Some(event_result) = stream.next().await {
-            match event_result {
-                Ok(event) => {
-                    if let Err(e) = handler.on_chunk(&event).await {
-                        handler.on_error(&e).await;
-                        return Err(e);
-                    }
-
-                    match &event {
-                        StreamEvent::ContentDelta { text } => acc.text.push_str(text),
-                        StreamEvent::ToolUseDelta {
-                            id,
-                            name,
-                            input_delta,
-                            provider_metadata,
-                            index,
-                        } => {
-                            acc.merge_tool_use_delta(
-                                id,
-                                name.as_deref(),
-                                input_delta.as_deref(),
-                                provider_metadata,
-                                *index,
-                            );
-                        }
-                        StreamEvent::StopEvent { stop_reason } => {
-                            acc.stop_reason = stop_reason.clone();
-                        }
-                        StreamEvent::UsageEvent {
-                            input_tokens,
-                            output_tokens,
-                            thinking_tokens,
-                        } => {
-                            acc.input_tokens = Some(*input_tokens);
-                            acc.output_tokens = Some(*output_tokens);
-                            acc.thinking_tokens = *thinking_tokens;
-                        }
-                        StreamEvent::ThinkingDelta { .. } => {}
-                        StreamEvent::Error { message } => {
-                            let err = KovaError::Stream(message.clone());
-                            handler.on_error(&err).await;
-                            return Err(err);
-                        }
-                    }
-                }
-                Err(e) => {
-                    handler.on_error(&e).await;
-                    return Err(e);
-                }
-            }
-        }
-
-        // Gemini sends finishReason in the *last* chunk, which may not contain
-        // function calls. Prefer content: if we accumulated any tool calls,
-        // the stop reason must be ToolUse regardless of what StopEvent said.
-        if !acc.tool_calls.is_empty() {
-            acc.stop_reason = StopReason::ToolUse;
-        }
-
-        Ok(acc)
-    }
 }
 
 // ── Private streaming types ───────────────────────────────────────────
@@ -1133,10 +921,15 @@ struct StreamedToolCall {
 struct StreamAccumulator {
     text: String,
     tool_calls: Vec<StreamedToolCall>,
+    /// Complete reasoning blocks (with provider signatures) to round-trip
+    /// verbatim in the assistant message when the turn continues with tools.
+    thinking_blocks: Vec<ContentBlock>,
     stop_reason: StopReason,
     input_tokens: Option<u32>,
     output_tokens: Option<u32>,
     thinking_tokens: Option<u32>,
+    cache_read_tokens: Option<u32>,
+    cache_creation_tokens: Option<u32>,
 }
 
 impl Default for StreamAccumulator {
@@ -1144,10 +937,13 @@ impl Default for StreamAccumulator {
         Self {
             text: String::new(),
             tool_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
             stop_reason: StopReason::EndTurn,
             input_tokens: None,
             output_tokens: None,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }
     }
 }

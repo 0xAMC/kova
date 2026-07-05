@@ -21,6 +21,18 @@ use kova_sdk::tool::Tool;
 
 // ── Shared mock infrastructure ─────────────────────────────────────
 
+/// Run a single-user-message turn and return the assistant text (replaces the
+/// removed stateful `Agent::chat`; the agent is stateless).
+async fn run_text(agent: &kova_sdk::agent::Agent, text: &str) -> Result<String, KovaError> {
+    let messages = [ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+    }];
+    agent.run(&messages).await.map(|r| r.text)
+}
+
 /// Mock provider that captures requests and returns configurable responses.
 struct TelemetryMockProvider {
     responses: Vec<ModelResponse>,
@@ -109,6 +121,8 @@ fn make_text_response(text: &str) -> ModelResponse {
             output_tokens: 5,
             total_tokens: 15,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }),
         thinking: None,
     }
@@ -132,6 +146,8 @@ fn make_tool_call_response(calls: Vec<(&str, &str)>) -> ModelResponse {
             output_tokens: 3,
             total_tokens: 11,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }),
         thinking: None,
     }
@@ -168,7 +184,7 @@ async fn prop25_tool_execution_span_attributes_success() {
         .build()
         .unwrap();
 
-    let _ = agent.chat("conv_p25_ok", "hello").await;
+    let _ = run_text(&agent, "hello").await;
 
     // The agent logs "Tool execution complete" with tool.name, duration_ms, success
     assert!(logs_contain("tool.name"));
@@ -197,7 +213,7 @@ async fn prop25_tool_execution_span_attributes_failure() {
         .build()
         .unwrap();
 
-    let _ = agent.chat("conv_p25_fail", "hello").await;
+    let _ = run_text(&agent, "hello").await;
 
     assert!(logs_contain("bad_tool"));
     assert!(logs_contain("duration_ms"));
@@ -221,7 +237,7 @@ async fn prop25_tool_not_found_span_attributes() {
         .build()
         .unwrap();
 
-    let _ = agent.chat("conv_p25_notfound", "hello").await;
+    let _ = run_text(&agent, "hello").await;
 
     assert!(logs_contain("nonexistent_tool"));
     assert!(logs_contain("Tool not found"));
@@ -234,7 +250,7 @@ async fn prop25_tool_not_found_span_attributes() {
 // For any LLM request, emitted span contains model name, latency,
 // token counts, status.
 //
-// The agent wraps each chat turn in an `agent.chat` span with
+// The agent wraps each turn in an `agent.run` span with
 // conversation_id. When tool calls occur, child events are emitted
 // within that span, making the span context visible in log output.
 // We verify the conversation_id and span hierarchy appear.
@@ -243,7 +259,7 @@ async fn prop25_tool_not_found_span_attributes() {
 #[tracing_test::traced_test]
 async fn prop26_llm_request_span_contains_conversation_id() {
     // Use a tool call flow so that events are emitted within the
-    // agent.chat span, making the span context visible in logs.
+    // agent.run span, making the span context visible in logs.
     let provider = Arc::new(TelemetryMockProvider::new(vec![
         make_tool_call_response(vec![("tc_p26", "probe_tool")]),
         make_text_response("hello back"),
@@ -261,13 +277,12 @@ async fn prop26_llm_request_span_contains_conversation_id() {
         .build()
         .unwrap();
 
-    let result = agent.chat("conv_p26", "hi").await;
+    let result = run_text(&agent, "hi").await;
     assert!(result.is_ok());
 
-    // The agent.chat span with conversation_id appears in the log
-    // context for events emitted during the chat turn.
-    assert!(logs_contain("conv_p26"));
-    // Tool execution events are emitted within the agent.chat span
+    // The agent.run span wraps the turn, so its events are visible in logs.
+    assert!(logs_contain("agent.run"));
+    // Tool execution events are emitted within the agent.run span
     assert!(logs_contain("probe_tool"));
     assert!(logs_contain("Tool execution complete"));
 }
@@ -303,7 +318,7 @@ async fn prop27_error_span_otel_status_code_on_tool_failure() {
         .build()
         .unwrap();
 
-    let _ = agent.chat("conv_p27_fail", "trigger error").await;
+    let _ = run_text(&agent, "trigger error").await;
 
     // The tool.execute span should record otel.status_code = ERROR
     assert!(logs_contain("otel.status_code"));
@@ -325,7 +340,7 @@ async fn prop27_error_span_otel_status_code_on_tool_not_found() {
         .build()
         .unwrap();
 
-    let _ = agent.chat("conv_p27_nf", "trigger not found").await;
+    let _ = run_text(&agent, "trigger not found").await;
 
     assert!(logs_contain("otel.status_code"));
     assert!(logs_contain("ERROR"));
@@ -554,9 +569,9 @@ fn prop29_env_filter_parses_for_all_levels() {
 // For all spans emitted during an agent chat turn, each child span
 // has parent reference to root span.
 //
-// The agent creates a root `agent.chat` span and child `tool.execute`
+// The agent creates a root `agent.run` span and child `tool.execute`
 // spans via `Instrument`. We verify that tool execution spans appear
-// nested under the agent.chat span by checking the log output
+// nested under the agent.run span by checking the log output
 // structure from tracing_test.
 
 #[tokio::test]
@@ -579,21 +594,21 @@ async fn prop30_span_parent_references_tool_under_agent() {
         .build()
         .unwrap();
 
-    let _ = agent.chat("conv_p30", "test parent spans").await;
+    let _ = run_text(&agent, "test parent spans").await;
 
-    // The root span `agent.chat` should be present
-    assert!(logs_contain("agent.chat"));
+    // The root span `agent.run` should be present
+    assert!(logs_contain("agent.run"));
     // The child span `tool.execute` should be present
     assert!(logs_contain("tool.execute"));
     // The tool name should appear in the child span
     assert!(logs_contain("parent_test_tool"));
 
     // tracing_test prefixes log lines with span context. The tool.execute
-    // events should appear within the agent.chat span context, evidenced
+    // events should appear within the agent.run span context, evidenced
     // by both span names appearing in the same log lines.
     logs_assert(|lines: &[&str]| {
         // Find lines that mention tool execution — they should also
-        // reference the agent.chat span in their prefix.
+        // reference the agent.run span in their prefix.
         let tool_lines: Vec<&&str> = lines
             .iter()
             .filter(|line| line.contains("parent_test_tool"))
@@ -603,15 +618,13 @@ async fn prop30_span_parent_references_tool_under_agent() {
             return Err("No log lines found mentioning parent_test_tool".to_string());
         }
 
-        // At least one tool-related line should show the agent.chat
+        // At least one tool-related line should show the agent.run
         // span in its context (tracing_test nests span names).
-        let has_parent_context = tool_lines
-            .iter()
-            .any(|line| line.contains("agent.chat") || line.contains("conv_p30"));
+        let has_parent_context = tool_lines.iter().any(|line| line.contains("agent.run"));
 
         if !has_parent_context {
             return Err(format!(
-                "Tool execution spans should be nested under agent.chat. Lines: {:?}",
+                "Tool execution spans should be nested under agent.run. Lines: {:?}",
                 tool_lines
             ));
         }
@@ -645,14 +658,13 @@ async fn prop30_multiple_tool_spans_under_same_parent() {
         .build()
         .unwrap();
 
-    let _ = agent.chat("conv_p30_multi", "test multiple tools").await;
+    let _ = run_text(&agent, "test multiple tools").await;
 
     // Both tool spans should be present
     assert!(logs_contain("tool_alpha"));
     assert!(logs_contain("tool_beta"));
-    // The parent agent.chat span should be present
-    assert!(logs_contain("agent.chat"));
-    assert!(logs_contain("conv_p30_multi"));
+    // The parent agent.run span should be present
+    assert!(logs_contain("agent.run"));
 }
 
 // ════════════════════════════════════════════════════════════════════

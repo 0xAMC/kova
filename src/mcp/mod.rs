@@ -14,6 +14,12 @@ use crate::error::KovaError;
 /// Default per-request timeout for MCP calls (handshake, tools/list, tools/call).
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Connect attempts per [`McpClient::connect`] / [`McpClient::reconnect`] call.
+const CONNECT_ATTEMPTS: u32 = 2;
+
+/// Pause between connect attempts.
+const CONNECT_BACKOFF: Duration = Duration::from_millis(500);
+
 /// Supplies (and refreshes) a bearer token for an authenticated transport.
 ///
 /// The transport owns no OAuth logic: it calls [`token`](Self::token) before
@@ -171,9 +177,17 @@ enum McpConnection {
 /// Supports stdio and HTTP/SSE transports. After calling [`connect`](Self::connect),
 /// use [`tools_list`](Self::tools_list) to discover available tools and
 /// [`tools_call`](Self::tools_call) to invoke them.
+///
+/// The client keeps the transport configuration so it can
+/// [`reconnect`](Self::reconnect); if the transport dies mid-session (an MCP
+/// child process exits, an HTTP stream breaks), the next `tools_list`/
+/// `tools_call` reconnects once and retries automatically.
 pub struct McpClient {
     connection: Arc<Mutex<McpConnection>>,
+    transport: McpTransport,
     request_timeout: Duration,
+    /// `tools/list` result, cached until [`reconnect`](Self::reconnect).
+    tool_cache: Mutex<Option<Vec<McpToolDefinition>>>,
 }
 
 impl McpClient {
@@ -189,12 +203,59 @@ impl McpClient {
     ///
     /// The timeout bounds every JSON-RPC round-trip (the `initialize`
     /// handshake, `tools/list`, and each `tools/call`), so a wedged server
-    /// cannot hang the agent loop indefinitely.
+    /// cannot hang the agent loop indefinitely. Transient connect failures are
+    /// retried once after a short backoff.
     pub async fn connect_with_timeout(
         transport: McpTransport,
         request_timeout: Duration,
     ) -> Result<Self, KovaError> {
-        let connection = match transport {
+        let connection = Self::establish_with_retry(&transport, request_timeout).await?;
+        Ok(Self {
+            connection: Arc::new(Mutex::new(connection)),
+            transport,
+            request_timeout,
+            tool_cache: Mutex::new(None),
+        })
+    }
+
+    /// Tear down the current connection and establish a fresh one from the
+    /// stored transport (respawning the child process for stdio, re-running the
+    /// `initialize` handshake where the protocol requires it). Clears the
+    /// `tools/list` cache. The old stdio child, if any, is killed on drop.
+    pub async fn reconnect(&self) -> Result<(), KovaError> {
+        let fresh = Self::establish_with_retry(&self.transport, self.request_timeout).await?;
+        *self.connection.lock().await = fresh;
+        *self.tool_cache.lock().await = None;
+        Ok(())
+    }
+
+    /// Establish a connection, retrying transient failures once.
+    async fn establish_with_retry(
+        transport: &McpTransport,
+        request_timeout: Duration,
+    ) -> Result<McpConnection, KovaError> {
+        let mut last_err = None;
+        for attempt in 1..=CONNECT_ATTEMPTS {
+            match Self::establish(transport, request_timeout).await {
+                Ok(conn) => return Ok(conn),
+                Err(e) => {
+                    if attempt < CONNECT_ATTEMPTS {
+                        tracing::warn!(error = %e, attempt, "MCP connect failed; retrying");
+                        tokio::time::sleep(CONNECT_BACKOFF).await;
+                    }
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.expect("at least one connect attempt"))
+    }
+
+    /// Open the transport and run the protocol handshake.
+    async fn establish(
+        transport: &McpTransport,
+        request_timeout: Duration,
+    ) -> Result<McpConnection, KovaError> {
+        let connection = match transport.clone() {
             McpTransport::Stdio { command, args, env } => {
                 let mut child = tokio::process::Command::new(&command)
                     .args(&args)
@@ -275,25 +336,26 @@ impl McpClient {
             }
         };
 
-        Ok(Self {
-            connection: Arc::new(Mutex::new(connection)),
-            request_timeout,
-        })
+        Ok(connection)
     }
 
     /// Discover available tools from the MCP server.
+    ///
+    /// The result is cached for the life of the connection (invalidated by
+    /// [`reconnect`](Self::reconnect)), so repeated agent builds against the
+    /// same client don't re-query the server.
     pub async fn tools_list(&self) -> Result<Vec<McpToolDefinition>, KovaError> {
-        let mut conn = self.connection.lock().await;
-        let response = tokio::time::timeout(
-            self.request_timeout,
-            Self::send_request(&mut conn, "tools/list", None),
-        )
-        .await
-        .map_err(|_| KovaError::Timeout(self.request_timeout))??;
+        if let Some(tools) = self.tool_cache.lock().await.as_ref() {
+            return Ok(tools.clone());
+        }
+        let response = self
+            .request_with_reconnect("tools/list", None, self.request_timeout)
+            .await?;
 
         let result: ToolsListResult = serde_json::from_value(response)
             .map_err(|e| KovaError::Mcp(format!("Failed to parse tools/list response: {}", e)))?;
 
+        *self.tool_cache.lock().await = Some(result.tools.clone());
         Ok(result.tools)
     }
 
@@ -303,19 +365,26 @@ impl McpClient {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<(String, bool), KovaError> {
-        let mut conn = self.connection.lock().await;
+        self.tools_call_with_timeout(tool_name, arguments, self.request_timeout)
+            .await
+    }
 
+    /// Invoke a tool with a per-call timeout, overriding the client's default —
+    /// for tools known to run long (or that must fail fast).
+    pub async fn tools_call_with_timeout(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<(String, bool), KovaError> {
         let params = serde_json::json!({
             "name": tool_name,
             "arguments": arguments,
         });
 
-        let response = tokio::time::timeout(
-            self.request_timeout,
-            Self::send_request(&mut conn, "tools/call", Some(params)),
-        )
-        .await
-        .map_err(|_| KovaError::Timeout(self.request_timeout))??;
+        let response = self
+            .request_with_reconnect("tools/call", Some(params), timeout)
+            .await?;
 
         let result: McpCallResult = serde_json::from_value(response)
             .map_err(|e| KovaError::Mcp(format!("Failed to parse tools/call response: {}", e)))?;
@@ -329,6 +398,38 @@ impl McpClient {
 
         let is_error = result.is_error.unwrap_or(false);
         Ok((text, is_error))
+    }
+
+    /// Send a request; if the transport is dead ([`KovaError::Connection`] —
+    /// exited child process, broken HTTP stream), reconnect once and retry.
+    /// Server-reported JSON-RPC errors ([`KovaError::Mcp`]) never trigger a
+    /// reconnect.
+    async fn request_with_reconnect(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, KovaError> {
+        let first = {
+            let mut conn = self.connection.lock().await;
+            tokio::time::timeout(
+                timeout,
+                Self::send_request(&mut conn, method, params.clone()),
+            )
+            .await
+            .map_err(|_| KovaError::Timeout(timeout))?
+        };
+        match first {
+            Err(KovaError::Connection(reason)) => {
+                tracing::warn!(mcp.method = method, %reason, "MCP transport lost; reconnecting");
+                self.reconnect().await?;
+                let mut conn = self.connection.lock().await;
+                tokio::time::timeout(timeout, Self::send_request(&mut conn, method, params))
+                    .await
+                    .map_err(|_| KovaError::Timeout(timeout))?
+            }
+            other => other,
+        }
     }
 
     /// Send a JSON-RPC request and return the result value.
@@ -400,25 +501,26 @@ impl McpClient {
             .map_err(|e| KovaError::Mcp(format!("Failed to serialize request: {}", e)))?;
         line.push('\n');
 
-        conn.stdin
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|e| KovaError::Mcp(format!("Failed to write to MCP process stdin: {}", e)))?;
-        conn.stdin
-            .flush()
-            .await
-            .map_err(|e| KovaError::Mcp(format!("Failed to flush MCP process stdin: {}", e)))?;
+        // Transport-level I/O failures are `Connection` errors (dead child
+        // process / closed pipes) so callers know a reconnect can help;
+        // protocol failures stay `Mcp`.
+        conn.stdin.write_all(line.as_bytes()).await.map_err(|e| {
+            KovaError::Connection(format!("Failed to write to MCP process stdin: {}", e))
+        })?;
+        conn.stdin.flush().await.map_err(|e| {
+            KovaError::Connection(format!("Failed to flush MCP process stdin: {}", e))
+        })?;
 
         // Read lines until we get a valid JSON-RPC response with our id.
         let mut buf = String::new();
         loop {
             buf.clear();
             let bytes_read = conn.stdout.read_line(&mut buf).await.map_err(|e| {
-                KovaError::Mcp(format!("Failed to read from MCP process stdout: {}", e))
+                KovaError::Connection(format!("Failed to read from MCP process stdout: {}", e))
             })?;
 
             if bytes_read == 0 {
-                return Err(KovaError::Mcp(
+                return Err(KovaError::Connection(
                     "MCP process closed stdout unexpectedly".into(),
                 ));
             }
@@ -464,11 +566,9 @@ impl McpClient {
         for (key, value) in &conn.headers {
             builder = builder.header(key, value);
         }
-        let resp = builder
-            .json(&request)
-            .send()
-            .await
-            .map_err(|e| KovaError::Mcp(format!("HTTP request to MCP server failed: {}", e)))?;
+        let resp = builder.json(&request).send().await.map_err(|e| {
+            KovaError::Connection(format!("HTTP request to MCP server failed: {}", e))
+        })?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -632,7 +732,7 @@ impl McpClient {
             .json(request)
             .send()
             .await
-            .map_err(|e| KovaError::Mcp(format!("HTTP request to MCP server failed: {e}")))
+            .map_err(|e| KovaError::Connection(format!("HTTP request to MCP server failed: {e}")))
     }
 
     /// Extract the JSON-RPC result matching `id` from an SSE response body.
@@ -680,7 +780,12 @@ impl McpClient {
                 headers: HashMap::new(),
                 next_id: 1,
             }))),
+            transport: McpTransport::HttpSse {
+                url: "http://localhost:0".to_string(),
+                headers: HashMap::new(),
+            },
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
+            tool_cache: Mutex::new(None),
         }
     }
 }
@@ -908,6 +1013,79 @@ for line in sys.stdin:
         let tools = client.tools_list().await.expect("tools_list");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "from_env");
+    }
+
+    /// Killing the MCP child mid-session is survivable: the next call detects
+    /// the dead transport, reconnects (respawning the child), and succeeds.
+    /// Also proves tools/list caching and its invalidation on reconnect: the
+    /// stub names its tool after its pid, so a cached list repeats the same
+    /// name and a reconnected client reports a new one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stdio_reconnects_after_child_death() {
+        if std::process::Command::new("python3")
+            .arg("--version")
+            .output()
+            .map(|o| !o.status.success())
+            .unwrap_or(true)
+        {
+            eprintln!("skipping: python3 not available");
+            return;
+        }
+
+        // MCP stdio stub whose `boom` tool kills the process (simulating a
+        // crashed server) and whose tools/list names the tool after the pid.
+        let stub = r#"
+import sys, json, os
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":{}}), flush=True)
+    elif method == "tools/list":
+        tools = [{"name": "tool_%d" % os.getpid()}]
+        print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":{"tools":tools}}), flush=True)
+    elif method == "tools/call":
+        if msg["params"]["name"] == "boom":
+            os._exit(1)
+        result = {"content":[{"type":"text","text":"ok"}]}
+        print(json.dumps({"jsonrpc":"2.0","id":msg["id"],"result":result}), flush=True)
+"#;
+
+        let client = McpClient::connect(McpTransport::Stdio {
+            command: "python3".to_string(),
+            args: vec!["-u".to_string(), "-c".to_string(), stub.to_string()],
+            env: HashMap::new(),
+        })
+        .await
+        .expect("connect");
+
+        let first = client.tools_list().await.expect("tools_list");
+        assert_eq!(client.tools_list().await.expect("cached list"), first);
+
+        // `boom` kills the child; the automatic reconnect-and-retry hits a
+        // fresh child that dies the same way, so the call surfaces the dead
+        // transport as a Connection error.
+        let err = client
+            .tools_call("boom", serde_json::json!({}))
+            .await
+            .expect_err("boom should fail");
+        assert!(matches!(err, KovaError::Connection(_)), "got {err:?}");
+
+        // The transport is dead — but the next call reconnects and succeeds.
+        let (text, is_error) = client
+            .tools_call("echo", serde_json::json!({}))
+            .await
+            .expect("call after child death should auto-reconnect");
+        assert_eq!(text, "ok");
+        assert!(!is_error);
+
+        // Reconnect invalidated the cache: the fresh child has a new pid.
+        let second = client.tools_list().await.expect("list after reconnect");
+        assert_ne!(first, second);
     }
 
     // ── Streamable HTTP transport ──────────────────────────────────────────────

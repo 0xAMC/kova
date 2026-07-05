@@ -20,12 +20,6 @@ fn all_public_types_are_send_sync() {
     // Tool registry
     assert_send_sync::<kova_sdk::tool::registry::ToolRegistry>();
 
-    // Memory store
-    assert_send_sync::<kova_sdk::memory::in_memory::InMemoryStore>();
-
-    // Orchestrator
-    assert_send_sync::<kova_sdk::orchestrator::Orchestrator>();
-
     // MCP client
     assert_send_sync::<kova_sdk::mcp::McpClient>();
 }

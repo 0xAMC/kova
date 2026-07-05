@@ -34,6 +34,16 @@ pub enum ContentBlock {
         content: String,
         is_error: bool,
     },
+    /// A model reasoning block that must round-trip verbatim in conversation
+    /// history. Anthropic requires the thinking blocks (with their opaque
+    /// `signature`) to be passed back unchanged when continuing a tool-use
+    /// turn; other providers ignore these blocks when building requests.
+    #[serde(alias = "Thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        signature: Option<String>,
+    },
 }
 
 // ── Messages ───────────────────────────────────────────────────────
@@ -78,6 +88,17 @@ pub struct UsageStats {
     /// Bedrock, Ollama) — surfaced as "unknown" rather than a misleading `0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_tokens: Option<u32>,
+    /// Input tokens served from the provider's prompt cache (~10% price), when
+    /// reported. Never included in `input_tokens` — kova normalizes providers
+    /// that fold cached tokens into their prompt count (OpenAI), so
+    /// `input_tokens + cache_read_tokens` is always the full prompt.
+    /// `None` = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_tokens: Option<u32>,
+    /// Input tokens written to the provider's prompt cache this call (billed
+    /// at a premium), when reported. `None` = unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_tokens: Option<u32>,
 }
 
 // ── Model Response ─────────────────────────────────────────────────
@@ -102,6 +123,41 @@ pub struct InferenceConfig {
     pub top_p: Option<f32>,
     /// Sequences that cause the model to stop generating.
     pub stop_sequences: Option<Vec<String>>,
+    /// Constrain the model's final text to a JSON schema. Mapped natively per
+    /// provider (OpenAI `response_format`, Anthropic `output_config.format`,
+    /// Gemini `responseSchema`, Ollama `format`); Bedrock has no native
+    /// equivalent and rejects requests that set this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ResponseFormat>,
+}
+
+/// A JSON-schema constraint on the model's output.
+///
+/// Keep schemas simple — the common subset all providers accept: `object`
+/// types with `properties`, `required`, `enum`, and `additionalProperties:
+/// false`. Provider-specific constructs are stripped where required
+/// (e.g. Gemini's schema sanitizer).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ResponseFormat {
+    /// Schema name, required by some providers (OpenAI); defaults to
+    /// `"output"` when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The JSON schema the final text must validate against.
+    pub schema: serde_json::Value,
+}
+
+impl ResponseFormat {
+    pub fn new(schema: serde_json::Value) -> Self {
+        Self { name: None, schema }
+    }
+
+    pub fn named(name: impl Into<String>, schema: serde_json::Value) -> Self {
+        Self {
+            name: Some(name.into()),
+            schema,
+        }
+    }
 }
 
 // ── Tool Definition (canonical) ────────────────────────────────────
@@ -145,6 +201,24 @@ pub enum StreamEvent {
         /// A subset of `output_tokens`, mirrored onto [`UsageStats::thinking_tokens`].
         #[serde(default)]
         thinking_tokens: Option<u32>,
+        /// Prompt tokens served from cache, mirrored onto
+        /// [`UsageStats::cache_read_tokens`].
+        #[serde(default)]
+        cache_read_tokens: Option<u32>,
+        /// Prompt tokens written to cache, mirrored onto
+        /// [`UsageStats::cache_creation_tokens`].
+        #[serde(default)]
+        cache_creation_tokens: Option<u32>,
+    },
+    /// A complete reasoning block with its provider signature, for verbatim
+    /// round-trip in conversation history (Anthropic tool loops require it).
+    /// Display consumers use [`ThinkingDelta`](Self::ThinkingDelta); this
+    /// variant is consumed by the agent loop's accumulator and never doubles
+    /// the visible text.
+    ThinkingBlock {
+        thinking: String,
+        #[serde(default)]
+        signature: Option<String>,
     },
     Error {
         message: String,

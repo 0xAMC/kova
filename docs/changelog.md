@@ -2,6 +2,42 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
+## 0.9.0 — Stateless core: memory, orchestrator, and push-streaming removed
+
+### Removed (breaking)
+- **`memory` module** — `MemoryStore` trait + `InMemoryStore`. The agent is stateless; conversation persistence, sessions, and compaction belong to the host. `AgentBuilder::memory` is gone.
+- **`orchestrator` module** — `Orchestrator`, `OrchestratorPattern`, `OrchestratorOutput`. Multi-agent composition (sequential/parallel/router) is an application concern, not an SDK one (muaz's `pipeline` engine owns it).
+- **Session/chat layer** — `Agent::chat`, `chat_response`, and `chat_stream`. Use `run` / `run_stream` over caller-owned history.
+- **Push-based streaming** — the `StreamingHandler` trait and `AgentBuilder::streaming_handler`. The only consumer was `chat_stream`; the pull-based `run_stream` (yielding `AgentEvent`s) is the streaming surface hosts use.
+- `KovaError::Memory` and `KovaError::Orchestration` variants (no remaining producers).
+
+### Notes
+- No functional change to `run` / `run_stream` / `run_structured` / `run_cancellable`. The `streaming` module retains its internal SSE / line-framing helpers used by the providers.
+
+## 0.8.0 — Native Anthropic provider + provider error classification + MCP resilience + cancellation
+
+### Added
+- **Native Anthropic provider** (`provider::anthropic`, feature `anthropic`, on by default) — speaks the Messages API (`POST /v1/messages`) directly: streaming SSE, tool use, adaptive extended thinking, and automatic prompt caching. `AnthropicProviderConfig::new(model)` with builders `with_api_key`, `with_adaptive_thinking(bool)` (default on — sends `thinking: {"type": "adaptive"}`), `with_effort("low|medium|high|xhigh|max")` (`output_config.effort`), `with_cache(bool)` (default on — top-level `cache_control: {"type": "ephemeral"}` auto-marks the last cacheable block, so system prompt + tools + history are served from cache on repeat turns), `with_default_max_tokens` (the Messages API requires `max_tokens`; default 32k).
+- `ContentBlock::Thinking { thinking, signature }` — reasoning blocks now round-trip verbatim in conversation history. Anthropic requires signed thinking blocks to be passed back unchanged when a tool-use turn continues; the agent loop preserves them (streamed turns included, via the new `StreamEvent::ThinkingBlock`). Other providers drop `Thinking` blocks when building requests, so cross-provider history stays valid.
+- `UsageStats::cache_read_tokens` / `cache_creation_tokens` (and the same fields on `StreamEvent::UsageEvent`) — prompt-cache reads/writes reported per call and aggregated per turn. Populated by Anthropic (`cache_read_input_tokens` / `cache_creation_input_tokens`), OpenAI-compatible (`prompt_tokens_details.cached_tokens`, reads only), and Bedrock (`cacheReadInputTokens` / `cacheWriteInputTokens`); `None` elsewhere means "unknown".
+- **Structured output** — `InferenceConfig::response_format: Option<ResponseFormat>` (`{ name, schema }`) constrains the final text to a JSON schema, mapped natively per provider: OpenAI `response_format: {type: "json_schema", …, strict: true}`, Anthropic `output_config.format`, Gemini `responseMimeType: "application/json"` + sanitized `responseSchema`, Ollama `format`. Bedrock has no native equivalent and rejects requests that set it (route structured steps elsewhere). `Agent::run_structured::<T>(messages, format)` runs a turn with the constraint applied and parses the final text into `T`, returning it alongside the full `AgentResponse`.
+- **Token counting + context budgets** — `LlmProvider::count_tokens(messages, tools)` (default: the offline `provider::heuristic_count_tokens`, ~4 chars/token; Anthropic overrides it with the native `/v1/messages/count_tokens` endpoint) and `AgentBuilder::context_budget(max_prompt_tokens)` — checked with the heuristic before every provider call in a turn; exceeding fails with the new `KovaError::ContextBudgetExceeded { measured, budget }` instead of sending a doomed request. kova imposes no default budget; hosts supply the numbers.
+- **Embeddings** — `EmbeddingProvider` trait (`embed(&[String]) -> Vec<Vec<f32>>`, optional `dimensions()`), with `embedding::openai::OpenAiEmbeddingProvider` (`/v1/embeddings`, optional reduced `dimensions`) and `embedding::ollama::OllamaEmbeddingProvider` (`/api/embed`). kova ships no vector store — this is the input seam for host-side retrieval.
+- **Bedrock prompt caching** — `BedrockProviderConfig::with_cache(true)` places a `cachePoint` after the system prompt and after the last message, mirroring the Anthropic provider's automatic placement. Opt-in because only cachePoint-capable Bedrock models (Anthropic Claude, Amazon Nova) accept it; cache usage fields are always read regardless.
+- `Agent::run_cancellable` / `Agent::run_stream_cancellable` — the stateless core primitives now accept a `tokio_util::sync::CancellationToken` (re-exported in the prelude). Cancellation races the in-flight provider call/stream and tool executions (dropped tool futures kill spawned processes via `kill_on_drop`); a cancelled turn returns the new `KovaError::Cancelled` and produces no messages. `run`/`run_stream` delegate with a never-cancelled token; the memory-backed `chat*` layer is intentionally not cancellable (pending removal — muaz owns session state).
+- `ProviderErrorClass` — `AuthInvalid` (401), `AuthForbidden` (403), `RateLimited { retry_after }` (429, with the `Retry-After` header when sent), `Overloaded` (408/500/502/503/504/529), `InvalidRequest` (400/413/422), `NotFound` (404), `Other`. Exposed on `KovaError::Provider { class }`, via `err.provider_class()`, and in the prelude.
+- Constructors `KovaError::provider_http`, `provider_invalid`, `provider_auth` — all provider errors are now built through these, so classification is uniform across OpenAI-compatible, Gemini, Bedrock (exception types normalized to statuses first), and Ollama. Bedrock credential-chain failures classify as `AuthInvalid`.
+
+- `McpClient::reconnect()` — tears down the connection and re-establishes it from the stored transport (respawns the stdio child, re-runs the `initialize` handshake). `tools_list`/`tools_call` do this automatically: a dead transport (`KovaError::Connection`) triggers one reconnect-and-retry, so a crashed MCP child no longer bricks the session. Connect itself retries transient failures once with a 500ms backoff.
+- `tools/list` caching on `McpClient` — repeated agent builds against the same client don't re-query the server; the cache invalidates on `reconnect()`.
+- `McpClient::tools_call_with_timeout(name, args, timeout)` — per-call timeout override for tools known to run long (or that must fail fast).
+
+### Changed (breaking)
+- OpenAI-compatible usage now reports `input_tokens` **excluding** cached prompt tokens (they arrive in `cache_read_tokens` instead), so `input_tokens + cache_read_tokens` is the full prompt on every provider — the uniform contract Anthropic and Bedrock already follow natively.
+- `KovaError::Provider` gained the required `class` field; construct via the new constructors instead of struct literals.
+- `KovaError::is_retryable()` now derives from the class (`RateLimited`/`Overloaded`); behavior is unchanged for all previously retryable statuses.
+- MCP transport-level I/O failures (dead child process, broken HTTP stream) now surface as `KovaError::Connection` instead of `KovaError::Mcp`; server-reported JSON-RPC errors remain `Mcp`. Callers matching on `Mcp` for connectivity problems must match `Connection`.
+
 ## 0.7.0
 
 ## Streamable HTTP transport + OAuth tokens

@@ -73,7 +73,9 @@ pub(crate) fn format_request(
                         },
                     });
                 }
-                ContentBlock::ToolResult { .. } => {}
+                // Anthropic-signed reasoning blocks don't exist in the
+                // Chat Completions shape; drop them across providers.
+                ContentBlock::ToolResult { .. } | ContentBlock::Thinking { .. } => {}
             }
         }
 
@@ -124,6 +126,16 @@ pub(crate) fn format_request(
         stream: None,
         stream_options: None,
         reasoning_effort: None,
+        response_format: config.response_format.as_ref().map(|f| {
+            serde_json::json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": f.name.clone().unwrap_or_else(|| "output".to_string()),
+                    "schema": f.schema,
+                    "strict": true,
+                },
+            })
+        }),
     }
 }
 
@@ -136,17 +148,14 @@ pub(crate) fn format_response(
         .choices
         .into_iter()
         .next()
-        .ok_or_else(|| KovaError::Provider {
-            message: "No choices in response".to_string(),
-            status_code: None,
-        })?;
+        .ok_or_else(|| KovaError::provider_invalid("No choices in response".to_string()))?;
 
     let role = choice.message.role.as_str();
     if role != "system" && role != "user" && role != "assistant" && role != "tool" {
-        return Err(KovaError::Provider {
-            message: format!("Unrecognized role: {}", role),
-            status_code: None,
-        });
+        return Err(KovaError::provider_invalid(format!(
+            "Unrecognized role: {}",
+            role
+        )));
     }
 
     let stop_reason = map_finish_reason(choice.finish_reason.as_deref());
@@ -170,14 +179,23 @@ pub(crate) fn format_response(
         }
     }
 
-    let usage = oai_resp.usage.map(|u| UsageStats {
-        input_tokens: u.prompt_tokens,
-        output_tokens: u.completion_tokens,
-        total_tokens: u.total_tokens,
-        thinking_tokens: u
-            .completion_tokens_details
-            .as_ref()
-            .map(|d| d.reasoning_tokens),
+    // OpenAI's prompt_tokens INCLUDES cached tokens; kova's contract is that
+    // input_tokens counts only non-cached input (as Anthropic and Bedrock
+    // report natively), so subtract to keep the semantic uniform.
+    let usage = oai_resp.usage.map(|u| {
+        let cached = u.prompt_tokens_details.as_ref().map(|d| d.cached_tokens);
+        UsageStats {
+            input_tokens: u.prompt_tokens.saturating_sub(cached.unwrap_or(0)),
+            output_tokens: u.completion_tokens,
+            total_tokens: u.total_tokens,
+            thinking_tokens: u
+                .completion_tokens_details
+                .as_ref()
+                .map(|d| d.reasoning_tokens),
+            cache_read_tokens: cached,
+            // OpenAI's cache is automatic; writes aren't reported separately.
+            cache_creation_tokens: None,
+        }
     });
 
     Ok(ModelResponse {
@@ -204,13 +222,20 @@ pub(crate) fn format_stream_event(chunk: OaiResponseChunk) -> Vec<StreamEvent> {
     let mut events = Vec::new();
 
     if let Some(usage) = chunk.usage {
+        let cached = usage
+            .prompt_tokens_details
+            .as_ref()
+            .map(|d| d.cached_tokens);
         events.push(StreamEvent::UsageEvent {
-            input_tokens: usage.prompt_tokens,
+            // See format_response: input_tokens counts non-cached input only.
+            input_tokens: usage.prompt_tokens.saturating_sub(cached.unwrap_or(0)),
             output_tokens: usage.completion_tokens,
             thinking_tokens: usage
                 .completion_tokens_details
                 .as_ref()
                 .map(|d| d.reasoning_tokens),
+            cache_read_tokens: cached,
+            cache_creation_tokens: None,
         });
     }
 

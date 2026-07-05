@@ -7,7 +7,7 @@ use kova_sdk::agent::AgentBuilder;
 use kova_sdk::models::*;
 
 use mock::provider::{
-    CapturingMockProvider, MockLlmProvider, make_text_response, make_tool_call_response,
+    CapturingMockProvider, MockLlmProvider, make_text_response, make_tool_call_response, run_text,
 };
 use mock::tool::MockTool;
 
@@ -53,7 +53,7 @@ async fn parallel_tool_calls_execute_concurrently() {
     let agent = builder.build().unwrap();
 
     let start = Instant::now();
-    let reply = agent.chat("conv-1", "run all tools").await.unwrap();
+    let reply = run_text(&agent, "run all tools").await.unwrap();
     let elapsed = start.elapsed();
 
     assert_eq!(reply, "all five done");
@@ -92,7 +92,7 @@ async fn parallel_tool_calls_partial_failure() {
         .build()
         .unwrap();
 
-    let reply = agent.chat("conv-1", "run mixed tools").await.unwrap();
+    let reply = run_text(&agent, "run mixed tools").await.unwrap();
     assert_eq!(reply, "handled partial failure");
 
     // Inspect the second LLM request — it should contain exactly 3 tool-role messages.
@@ -185,7 +185,7 @@ async fn parallel_tool_calls_semaphore_limits_concurrency() {
     let agent = builder.build().unwrap();
 
     let start = Instant::now();
-    let reply = agent.chat("conv-1", "run with semaphore").await.unwrap();
+    let reply = run_text(&agent, "run with semaphore").await.unwrap();
     let elapsed = start.elapsed();
 
     assert_eq!(reply, "semaphore test done");
