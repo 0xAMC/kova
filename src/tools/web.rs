@@ -120,14 +120,38 @@ async fn fetch_webpage(
 /// those govern model-supplied fetch targets, whereas this helper is for
 /// endpoints the tool author chose. Redirects are not followed.
 pub async fn fetch_text(url: &reqwest::Url, web: &WebPolicy) -> Result<String, String> {
+    fetch_text_with_headers(url, web, &[]).await
+}
+
+/// Like [`fetch_text`] but attaches caller-supplied request headers.
+///
+/// Used by tool authors driving an authenticated backend (e.g. a search API
+/// that expects a subscription token). Applies the exact same SSRF pinning,
+/// `user_agent`, and no-redirect behaviour as [`fetch_text`]; the extra headers
+/// are added on top. Header names/values are trusted (tool-author supplied);
+/// invalid ones are skipped rather than aborting the request.
+pub async fn fetch_text_with_headers(
+    url: &reqwest::Url,
+    web: &WebPolicy,
+    extra_headers: &[(&str, &str)],
+) -> Result<String, String> {
+    use reqwest::header::{HeaderName, HeaderValue};
     let addr = validate_target(url, web.allow_private_hosts).await?;
     let host = url
         .host_str()
         .ok_or_else(|| format!("URL '{url}' has no host"))?
         .to_string();
     let client = build_pinned_client(&host, addr, &web.user_agent)?;
-    let response = client
-        .get(url.clone())
+    let mut request = client.get(url.clone());
+    for (name, value) in extra_headers {
+        if let (Ok(n), Ok(v)) = (
+            HeaderName::from_bytes(name.as_bytes()),
+            HeaderValue::from_str(value),
+        ) {
+            request = request.header(n, v);
+        }
+    }
+    let response = request
         .send()
         .await
         .map_err(|e| format!("Request to '{url}' failed: {e}"))?;
@@ -432,6 +456,21 @@ mod tests {
             ..WebPolicy::default()
         };
         let err = fetch_webpage("http://127.0.0.1/", &web, WebFormat::Markdown, false)
+            .await
+            .unwrap_err();
+        assert!(err.contains("private/internal"));
+    }
+
+    #[tokio::test]
+    async fn fetch_text_with_headers_keeps_ssrf_guard() {
+        // The header-carrying variant must apply the same private-address block
+        // as fetch_text — a caller's auth header cannot bypass SSRF protection.
+        let web = WebPolicy {
+            https_only: false,
+            ..WebPolicy::default()
+        };
+        let url = reqwest::Url::parse("http://127.0.0.1/").unwrap();
+        let err = fetch_text_with_headers(&url, &web, &[("X-Token", "secret")])
             .await
             .unwrap_err();
         assert!(err.contains("private/internal"));
