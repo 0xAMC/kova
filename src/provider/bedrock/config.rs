@@ -39,6 +39,8 @@ pub struct BedrockProviderConfig {
     /// Use this for any model-specific parameters beyond the standard `inferenceConfig` fields.
     /// The key/value structure is model-defined — consult the model's AWS documentation.
     pub additional_model_request_fields: Option<serde_json::Value>,
+    /// Bedrock prompt caching (cachePoint placement). Opt-in; see [`Self::with_cache`].
+    pub cache: bool,
     base_url: String,
 }
 
@@ -61,6 +63,7 @@ impl BedrockProviderConfig {
             timeout: Duration::from_secs(DEFAULT_TIMEOUT_SECS),
             endpoint_url: None,
             additional_model_request_fields: None,
+            cache: false,
             base_url,
         }
     }
@@ -89,6 +92,17 @@ impl BedrockProviderConfig {
 
     pub fn with_endpoint_url(mut self, url: impl Into<String>) -> Self {
         self.endpoint_url = Some(url.into());
+        self
+    }
+
+    /// Enable Bedrock prompt caching: a `cachePoint` is placed after the
+    /// system prompt and after the last message, so the stable prefix is
+    /// served from cache on repeat turns. **Opt-in** because only some
+    /// Bedrock models support cachePoint (Anthropic Claude, Amazon Nova);
+    /// enabling it on an unsupported model fails the request with a
+    /// ValidationException.
+    pub fn with_cache(mut self, enabled: bool) -> Self {
+        self.cache = enabled;
         self
     }
 

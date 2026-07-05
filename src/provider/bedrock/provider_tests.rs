@@ -198,6 +198,7 @@ async fn test_credential_resolution_failure_returns_provider_error() {
         Err(KovaError::Provider {
             message,
             status_code,
+            ..
         }) => {
             assert!(
                 message.contains("credentials")

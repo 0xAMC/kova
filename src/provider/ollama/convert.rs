@@ -215,7 +215,7 @@ pub(crate) fn format_request(
         stream: streaming,
         tools: ollama_tools,
         think: provider_config.think.clone(),
-        format: None,
+        format: config.response_format.as_ref().map(|f| f.schema.clone()),
         options: build_options(provider_config, config),
         keep_alive: provider_config.keep_alive.clone(),
     }
@@ -265,6 +265,8 @@ pub(crate) fn format_response(resp: OllamaResponse) -> Result<ModelResponse, Kov
             output_tokens: resp.eval_count,
             total_tokens: resp.prompt_eval_count + resp.eval_count,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         })
     } else {
         None
@@ -327,6 +329,8 @@ pub(crate) fn format_stream_chunk(resp: OllamaResponse) -> Vec<StreamEvent> {
                 input_tokens: resp.prompt_eval_count,
                 output_tokens: resp.eval_count,
                 thinking_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
             });
         }
     }
@@ -349,10 +353,9 @@ pub(crate) fn ndjson_byte_stream_to_events(
         }
         match serde_json::from_str::<OllamaResponse>(line) {
             Ok(resp) => LineOutcome::Events(format_stream_chunk(resp)),
-            Err(e) => LineOutcome::Fail(KovaError::Provider {
-                message: format!("Failed to parse streaming chunk: {e}"),
-                status_code: None,
-            }),
+            Err(e) => LineOutcome::Fail(KovaError::provider_invalid(format!(
+                "Failed to parse streaming chunk: {e}"
+            ))),
         }
     })
 }
@@ -758,5 +761,27 @@ mod tests {
         assert!(events.iter().any(
             |e| matches!(e, StreamEvent::ToolUseDelta { name: Some(n), .. } if n == "get_weather")
         ));
+    }
+
+    #[test]
+    fn response_format_maps_to_format_field() {
+        let provider_config = OllamaProviderConfig::new("llama3.2");
+        let schema =
+            serde_json::json!({"type": "object", "properties": {"x": {"type": "integer"}}});
+        let config = InferenceConfig {
+            response_format: Some(crate::models::ResponseFormat::new(schema.clone())),
+            ..Default::default()
+        };
+        let req = format_request(&[], &[], &config, &provider_config, false);
+        assert_eq!(req.format, Some(schema));
+
+        let req = format_request(
+            &[],
+            &[],
+            &InferenceConfig::default(),
+            &provider_config,
+            false,
+        );
+        assert!(req.format.is_none());
     }
 }

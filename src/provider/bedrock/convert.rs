@@ -1,5 +1,5 @@
 use super::types::{
-    BedrockContentBlock, BedrockContentBlockDelta, BedrockContentBlockStart,
+    BedrockCachePoint, BedrockContentBlock, BedrockContentBlockDelta, BedrockContentBlockStart,
     BedrockConverseRequest, BedrockConverseResponse, BedrockInferenceConfig, BedrockInputSchema,
     BedrockMessage, BedrockStreamEvent, BedrockSystemBlock, BedrockToolConfig,
     BedrockToolResultContent, BedrockToolSpec, BedrockToolSpecInner,
@@ -15,6 +15,7 @@ pub(super) fn format_request(
     tools: &[ToolDefinition],
     config: &InferenceConfig,
     additional_model_request_fields: Option<serde_json::Value>,
+    cache: bool,
 ) -> BedrockConverseRequest {
     let mut system_blocks: Vec<BedrockSystemBlock> = Vec::new();
     let mut bedrock_messages: Vec<BedrockMessage> = Vec::new();
@@ -23,7 +24,7 @@ pub(super) fn format_request(
         if msg.role == Role::System {
             for block in &msg.content {
                 if let ContentBlock::Text { text } = block {
-                    system_blocks.push(BedrockSystemBlock { text: text.clone() });
+                    system_blocks.push(BedrockSystemBlock::Text { text: text.clone() });
                 }
             }
             continue;
@@ -38,20 +39,20 @@ pub(super) fn format_request(
         let content = msg
             .content
             .iter()
-            .map(|block| match block {
-                ContentBlock::Text { text } => BedrockContentBlock::Text(text.clone()),
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(BedrockContentBlock::Text(text.clone())),
                 ContentBlock::ToolUse {
                     id, name, input, ..
-                } => BedrockContentBlock::ToolUse {
+                } => Some(BedrockContentBlock::ToolUse {
                     tool_use_id: id.clone(),
                     name: name.clone(),
                     input: input.clone(),
-                },
+                }),
                 ContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     is_error,
-                } => BedrockContentBlock::ToolResult {
+                } => Some(BedrockContentBlock::ToolResult {
                     tool_use_id: tool_use_id.clone(),
                     content: vec![BedrockToolResultContent {
                         text: content.clone(),
@@ -61,7 +62,10 @@ pub(super) fn format_request(
                     } else {
                         "success".to_string()
                     }),
-                },
+                }),
+                // Anthropic-signed reasoning blocks don't translate to the
+                // Converse API; drop them when history crosses providers.
+                ContentBlock::Thinking { .. } => None,
             })
             .collect();
 
@@ -69,6 +73,23 @@ pub(super) fn format_request(
             role: role_str.to_string(),
             content,
         });
+    }
+
+    // Prompt caching: a cachePoint after the system prompt caches it, and one
+    // after the last message caches the whole conversation prefix, mirroring
+    // the Anthropic provider's automatic placement. Opt-in — only cachePoint-
+    // capable Bedrock models (Anthropic Claude, Amazon Nova) accept these.
+    if cache {
+        if !system_blocks.is_empty() {
+            system_blocks.push(BedrockSystemBlock::CachePoint {
+                cache_point: BedrockCachePoint::default_point(),
+            });
+        }
+        if let Some(last) = bedrock_messages.last_mut() {
+            last.content.push(BedrockContentBlock::CachePoint(
+                BedrockCachePoint::default_point(),
+            ));
+        }
     }
 
     let system = if system_blocks.is_empty() {
@@ -149,6 +170,7 @@ pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResp
                 })
             }
             // Collect thinking text but exclude from conversation history.
+            BedrockContentBlock::CachePoint(_) => None,
             BedrockContentBlock::ReasoningContent { reasoning_text } => {
                 if !reasoning_text.text.is_empty() {
                     thinking_parts.push(reasoning_text.text);
@@ -172,6 +194,8 @@ pub(super) fn format_response(resp: BedrockConverseResponse) -> Result<ModelResp
         total_tokens: resp.usage.total_tokens,
         // Bedrock folds reasoning into output_tokens; no separate count.
         thinking_tokens: None,
+        cache_read_tokens: resp.usage.cache_read_input_tokens,
+        cache_creation_tokens: resp.usage.cache_write_input_tokens,
     };
 
     Ok(ModelResponse {
@@ -246,6 +270,8 @@ pub(super) fn format_stream_event(event: BedrockStreamEvent) -> Option<StreamEve
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             thinking_tokens: None,
+            cache_read_tokens: usage.cache_read_input_tokens,
+            cache_creation_tokens: usage.cache_write_input_tokens,
         }),
     }
 }

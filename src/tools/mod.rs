@@ -58,7 +58,7 @@ pub use policy::{
 };
 pub use shell::ShellTool;
 #[cfg(feature = "web-tools")]
-pub use web::{FetchWebpageTool, fetch_text};
+pub use web::{FetchWebpageTool, fetch_text, fetch_text_with_headers};
 
 /// Wrap `content` as a successful tool result.
 pub fn tool_result(content: impl Into<String>) -> ToolResult {

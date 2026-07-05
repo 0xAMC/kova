@@ -6,49 +6,49 @@ Kova is structured as a set of orthogonal, trait-based modules. Each module owns
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                        Agent                             │
+│                        Agent (stateless)                 │
 │  ┌──────────┐  ┌──────────────┐  ┌───────────────────┐  │
-│  │ Provider │  │ ToolRegistry │  │   MemoryStore     │  │
-│  │(LlmProv.)│  │(RwLock<Map>) │  │ (RwLock<Map>)     │  │
+│  │ Provider │  │ ToolRegistry │  │  InferenceConfig  │  │
+│  │(LlmProv.)│  │(RwLock<Map>) │  │                   │  │
 │  └──────────┘  └──────────────┘  └───────────────────┘  │
 │  ┌──────────────────┐  ┌──────────────────────────────┐  │
-│  │ StreamingHandler │  │    InferenceConfig           │  │
+│  │ ApprovalHandler  │  │  ToolLifecycleHook / metrics │  │
 │  └──────────────────┘  └──────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
-         │ composes
-┌────────▼──────────────────────────────────────────────────┐
-│                    Orchestrator                            │
-│  HashMap<String, Arc<Agent>> + timeout + OrchestratorPattern
-└───────────────────────────────────────────────────────────┘
 ```
+
+The agent holds no conversation state: `run` takes caller-supplied history and
+returns the messages it produced. Sessions, persistence, compaction, and
+multi-agent orchestration are the host's concern (in muaz, `ChatSession` and
+`PipelineRunner`).
 
 ## Agentic Loop
 
 The loop in `agent/mod.rs` is the core of the library:
 
 ```
-chat(conversation_id, user_message)
+run(messages)   // caller-owned history in
   │
-  ├─ store user message in MemoryStore
+  ├─ working = system_prompt + messages
   │
   └─ loop (up to max_iterations + 1 total provider calls):
-       ├─ build messages = system_prompt + memory.get_history()
-       ├─ provider.chat_completion(messages, tool_defs, config)
+       ├─ context-budget guard (heuristic) → Err(ContextBudgetExceeded) if over
+       ├─ provider.chat_completion(working, tool_defs, config)
        │
        ├─ StopReason::ToolUse?
-       │    ├─ store assistant message (tool-use blocks)
+       │    ├─ append assistant message (tool-use blocks) to working
        │    ├─ execute tools concurrently (Semaphore, default cap 10)
-       │    ├─ store each ToolResult as Role::Tool message
+       │    ├─ append each ToolResult as Role::Tool message
        │    └─ continue loop
        │
        ├─ StopReason::EndTurn | MaxTokens | Unknown?
-       │    ├─ store input_tokens in last_turn_input_tokens (AtomicU32) if provider reports usage
-       │    └─ store assistant message + return text
+       │    ├─ record input_tokens in last_turn_input_tokens (AtomicU32) if reported
+       │    └─ return AgentResponse { text, new_messages, usage, … }
        │
        └─ loop limit hit → Err(KovaError::MaxIterations)
 ```
 
-`chat_stream` is identical but uses `provider.chat_completion_stream` and forwards `StreamEvent`s to the registered `StreamingHandler` before returning the full text.
+`run_stream` is the pull-based sibling: same loop over `chat_completion_stream`, yielding `AgentEvent`s (`TextDelta` / `ThinkingDelta` / `ToolCall*` / `TurnCompleted`) instead of forwarding to a handler.
 
 ## Provider Abstraction
 
@@ -62,7 +62,7 @@ LlmProvider (trait, object-safe)
  └── OllamaProvider             ← reqwest + NDJSON streaming, no auth, /api/chat + /api/tags
 ```
 
-**Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes. `ThinkingDelta` events are forwarded to the `StreamingHandler` but otherwise ignored by the accumulator.
+**Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes. `ThinkingDelta` events surface as `AgentEvent::ThinkingDelta` on `run_stream` but are otherwise ignored by the tool-call accumulator.
 
 **OpenAI path override**: `OpenAiProviderConfig` exposes `with_chat_completions_path` and `with_models_path` so Azure deployments, local servers, and proxies can override the default `/v1/chat/completions` and `/v1/models` paths without subclassing. `with_reasoning_effort` sets the `reasoning_effort` field for o-series models.
 
@@ -72,7 +72,7 @@ LlmProvider (trait, object-safe)
 
 **Ollama streaming**: uses newline-delimited JSON (NDJSON) over `/api/chat` rather than SSE. Each line is a complete `OllamaResponse` object; the final chunk has `done: true` and carries token counts. The `OllamaThink` enum serialises as a bool (`true`) or string (`"high"` / `"medium"` / `"low"`) to match Ollama's `think` field.
 
-**Thinking/reasoning across all providers**: chain-of-thought output (OpenAI `reasoning_content`, Bedrock `ReasoningContent`, Gemini `thought: true`, Ollama `thinking` field) is extracted by each provider's converter and placed in `ModelResponse::thinking`. It is never written into the conversation history and is never re-submitted to the LLM. During streaming, reasoning text arrives as `StreamEvent::ThinkingDelta`. In the non-streaming `chat` path the agent replays any thinking text as `ThinkingDelta` + empty `ContentDelta` events to the registered `StreamingHandler` so callers see reasoning output in both modes.
+**Thinking/reasoning across all providers**: chain-of-thought output (OpenAI `reasoning_content`, Bedrock `ReasoningContent`, Gemini `thought: true`, Ollama `thinking` field) is extracted by each provider's converter and placed in `ModelResponse::thinking`. It is never written into the conversation history and is never re-submitted to the LLM. During streaming, reasoning text arrives as `StreamEvent::ThinkingDelta`.
 
 ## Tool Execution Model
 
@@ -109,11 +109,6 @@ as error `ToolResult`s so the model can recover, not as transport `KovaError`s.
 
 `AgentBuilder` defaults to `InferenceConfig::default()` (all fields `None`), so embedders that do not call `inference_config()` see no behaviour change.
 
-## Memory Design
-
-`MemoryStore` is keyed by `conversation_id`, allowing a single store instance to serve many concurrent conversations.
-
-`InMemoryStore::with_max_messages(n)` truncates the oldest non-system messages when the count exceeds `n`. System prompt messages (Role::System) at position 0 are preserved across truncation to avoid breaking provider context requirements.
 
 ## MCP Integration
 
@@ -123,13 +118,6 @@ MCP tools are discovered at build time (via `AgentBuilder::mcp_client`) and regi
 
 Three transports are supported via `McpTransport`: `Stdio` (subprocess), `HttpSse` (legacy static-header HTTP), and `StreamableHttp` (the MCP 2025 transport — `initialize` handshake, `Mcp-Session-Id` tracking, JSON-or-SSE responses). Authentication is decoupled from the transport: `StreamableHttp` accepts an optional `TokenProvider`, and kova attaches the bearer token and retries once on `401` after calling `refresh()`. kova holds no OAuth state — the host owns the flow and token storage.
 
-## Orchestrator Design
-
-The `Orchestrator` holds a `HashMap<String, Arc<Agent>>`. Patterns reference agents by name (string keys). This decouples pattern configuration from agent construction and makes it easy to swap agents without rebuilding the orchestrator.
-
-- **Sequential**: implemented as an iterative fold — no recursion, bounded stack.
-- **Parallel**: uses `tokio::time::timeout` + `futures::future::join_all`; individual agent failures are captured rather than short-circuiting.
-- **Router**: the router agent is called first; its response text is used as the key to look up the downstream agent name.
 
 ## Error Design
 
@@ -139,10 +127,9 @@ The `Orchestrator` holds a `HashMap<String, Arc<Agent>>`. Patterns reference age
 |---------|-------|
 | `Provider`, `Connection`, `Http`, `Timeout` | Provider layer |
 | `ToolExecution`, `ToolNotFound` | Tool layer |
-| `Memory` | Memory layer |
 | `Mcp` | MCP layer |
 | `Stream` | Streaming layer |
-| `Orchestration`, `MaxIterations` | Orchestrator / Agent loop |
+| `MaxIterations`, `ContextBudgetExceeded` | Agent loop |
 | `Build` | AgentBuilder validation |
 | `Serialization`, `Io` | Cross-cutting I/O |
 
@@ -157,7 +144,6 @@ Internal synchronisation primitives:
 | Type | Primitive | Reason |
 |------|-----------|--------|
 | `ToolRegistry` | `RwLock` | Many concurrent reads, infrequent writes |
-| `InMemoryStore` | `RwLock` | Many reads, sequential append |
 | `McpClient` | `Mutex` | Ordered JSON-RPC request/response |
 | Tool parallelism | `Semaphore` | Bounded fan-out |
 | `last_turn_input_tokens` | `AtomicU32` | Lock-free token counter read from any thread |

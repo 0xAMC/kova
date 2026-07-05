@@ -9,9 +9,8 @@ AgentBuilder::new()
     .inference_config(InferenceConfig)            // optional (model, max_tokens, temperature, top_p, stop_sequences)
     .tool(Arc<dyn Tool>)                          // optional, repeatable
     .tool_registry(ToolRegistry)                  // optional (composes with .tool())
-    .memory(Arc<dyn MemoryStore>)                // optional (default: InMemoryStore unlimited)
-    .streaming_handler(Arc<dyn StreamingHandler>) // optional
     .mcp_client(Arc<McpClient>, &str).await?      // optional, async
+    .context_budget(u32)                          // optional (max prompt tokens; heuristic guard)
     .max_iterations(usize)                        // optional (default: 10)
     .max_concurrent_tools(usize)                  // optional (default: 10)
     .retry_config(RetryConfig)                    // optional (default: 2 retries, exp backoff)
@@ -28,9 +27,8 @@ AgentBuilder::new()
 | `inference_config` | no | all-`None` | Sets `max_tokens`, `temperature`, `model` for every call |
 | `tool` | no | — | Repeatable; merged into `tool_registry` on build |
 | `tool_registry` | no | empty | Composes with `tool` |
-| `memory` | no | `InMemoryStore` (unbounded) | |
-| `streaming_handler` | no | `None` | Used by `chat_stream` only |
 | `mcp_client` | no | — | Async; discovers tools at build time |
+| `context_budget` | no | `None` | Max prompt tokens per call (heuristic); over-budget fails with `ContextBudgetExceeded` before the request |
 | `max_iterations` | no | `10` | Max tool-call loop iterations |
 | `max_concurrent_tools` | no | `10` | Semaphore cap for parallel tool calls |
 | `retry_config` | no | 2 retries | Exponential backoff on transient errors; `RetryConfig::disabled()` to turn off |
@@ -44,15 +42,24 @@ AgentBuilder::new()
 ### Stateless API (core)
 
 ```rust
-// One agentic turn over caller-owned history. No memory-store involvement.
+// One agentic turn over caller-owned history. Stateless — the host owns history.
 agent.run(messages: &[ConversationMessage]) -> Result<AgentResponse, KovaError>
 
 // Same, with per-call InferenceConfig overrides (unset fields fall back to agent defaults).
 agent.run_with_config(messages, overrides: InferenceConfig) -> Result<AgentResponse, KovaError>
 
+// Constrain the final text to a JSON schema and parse it into T.
+agent.run_structured::<T>(messages, format: ResponseFormat) -> Result<(T, AgentResponse), KovaError>
+
 // Pull-based streaming: TextDelta / ThinkingDelta / ToolCallStarted /
 // ToolCallFinished / TurnCompleted { response }.
 agent.run_stream(messages) -> impl Stream<Item = Result<AgentEvent, KovaError>>
+
+// Cancellable variants: the token (prelude re-export of tokio-util's
+// CancellationToken) aborts the turn mid-provider-call or mid-tool-execution
+// with KovaError::Cancelled; no messages are produced.
+agent.run_cancellable(messages, cancel: CancellationToken) -> Result<AgentResponse, KovaError>
+agent.run_stream_cancellable(messages, cancel: CancellationToken) -> impl Stream<...>
 ```
 
 ```rust
@@ -74,24 +81,6 @@ let response = agent.run(&history).await?;
 history.extend(response.new_messages);
 ```
 
-### Session API (memory-backed convenience)
-
-```rust
-// Blocking response — waits for full LLM output
-agent.chat(conversation_id: &str, user_message: &str) -> Result<String, KovaError>
-
-// Like chat, but returns the full AgentResponse
-agent.chat_response(conversation_id: &str, user_message: &str) -> Result<AgentResponse, KovaError>
-
-// Streaming response — delivers chunks to StreamingHandler, returns full text
-agent.chat_stream(conversation_id: &str, user_message: &str) -> Result<String, KovaError>
-
-// Input tokens reported by the provider for the most recently completed turn.
-agent.last_turn_input_tokens() -> u32
-```
-
-Session writes are transactional per turn: the user message and produced messages are
-persisted only after the turn succeeds, so a failed turn never corrupts the conversation.
 
 ## Providers
 
@@ -115,6 +104,56 @@ let config = OpenAiProviderConfig::new("https://api.openai.com", "gpt-4")
 
 let provider = Arc::new(OpenAiCompatibleProvider::new(config)?);
 ```
+
+### Anthropic (native Messages API)
+
+```rust
+use kova_sdk::provider::anthropic::{AnthropicProvider, AnthropicProviderConfig};
+
+let config = AnthropicProviderConfig::new("claude-opus-4-8")
+    .with_api_key(std::env::var("ANTHROPIC_API_KEY")?)
+    .with_effort("high");          // optional: output_config.effort
+    // .with_adaptive_thinking(false) // thinking: {"type":"adaptive"} is on by default
+    // .with_cache(false)             // automatic prompt caching is on by default
+
+let provider = Arc::new(AnthropicProvider::new(config)?);
+```
+
+Automatic prompt caching places a top-level `cache_control: {"type": "ephemeral"}`
+on every request, so the stable prefix (system prompt, tools, prior turns) is
+served from Anthropic's cache; per-call reads/writes surface as
+`UsageStats::cache_read_tokens` / `cache_creation_tokens`. Signed thinking
+blocks round-trip through history as `ContentBlock::Thinking` — required for
+tool loops with extended thinking.
+
+## Structured output
+
+Constrain a turn's final text to a JSON schema and parse it in one call:
+
+```rust
+use kova_sdk::models::ResponseFormat;
+
+#[derive(serde::Deserialize)]
+struct Route { route: String, confidence: f64 }
+
+let format = ResponseFormat::named("route", serde_json::json!({
+    "type": "object",
+    "properties": {
+        "route": {"type": "string"},
+        "confidence": {"type": "number"}
+    },
+    "required": ["route", "confidence"],
+    "additionalProperties": false
+}));
+
+let (route, response) = agent.run_structured::<Route>(&messages, format).await?;
+```
+
+`response_format` can also be set on `InferenceConfig` directly (or per call via
+`run_with_config`). Mapping is native per provider — OpenAI `response_format`
+(strict), Anthropic `output_config.format`, Gemini `responseSchema`, Ollama
+`format`; Bedrock rejects it (no native support).
+
 
 | Field | Default | Description |
 |-------|---------|-------------|
@@ -371,16 +410,6 @@ into host state. The web tools guard against SSRF (private-address rejection +
 DNS-pinned client) and confine output size; the file tools reject paths that
 escape `workspace_root` via `..` or symlinks.
 
-## Memory
-
-```rust
-use kova_sdk::memory::in_memory::InMemoryStore;
-
-let store = InMemoryStore::new();                   // Unbounded
-let store = InMemoryStore::with_max_messages(100);  // Capped; preserves system prompt on truncation
-```
-
-Pass to the builder: `.memory(Arc::new(store))`.
 
 ## MCP
 
@@ -435,74 +464,33 @@ impl TokenProvider for MyTokenStore {
 }
 ```
 
+### Resilience
+
+- `client.reconnect()` re-establishes the connection from the stored transport (respawns stdio children, re-runs the `initialize` handshake) and clears the tools/list cache.
+- `tools_list()`/`tools_call()` auto-recover: a dead transport (`KovaError::Connection`) triggers one reconnect-and-retry. Server-reported JSON-RPC errors (`KovaError::Mcp`) never do.
+- `tools_list()` results are cached until reconnect.
+- `tools_call_with_timeout(name, args, timeout)` overrides the client's default per-request timeout for one call.
+- `connect()` retries transient failures once (500ms backoff).
+
 ## Streaming
 
+Pull-based — no handler to register. `run_stream` yields `AgentEvent`s:
+
 ```rust
-use kova_sdk::streaming::StreamingHandler;
-use kova_sdk::models::StreamEvent;
-use kova_sdk::error::KovaError;
-use async_trait::async_trait;
+use futures::StreamExt;
+use kova_sdk::agent::AgentEvent;
 
-struct MyHandler;
-
-#[async_trait]
-impl StreamingHandler for MyHandler {
-    async fn on_chunk(&self, event: &StreamEvent) -> Result<(), KovaError> {
-        match event {
-            StreamEvent::ThinkingDelta { text } => eprint!("{text}"),   // reasoning output
-            StreamEvent::ContentDelta { text } => print!("{text}"),     // visible response
-            _ => {}
-        }
-        Ok(())
+let stream = agent.run_stream(&history);
+futures::pin_mut!(stream);
+while let Some(event) = stream.next().await {
+    match event? {
+        AgentEvent::ThinkingDelta { text } => eprint!("{text}"),
+        AgentEvent::TextDelta { text } => print!("{text}"),
+        AgentEvent::ToolCallStarted { name, .. } => eprintln!("⚙ {name}…"),
+        AgentEvent::TurnCompleted { response } => history.extend(response.new_messages),
+        _ => {}
     }
-    async fn on_complete(&self) -> Result<(), KovaError> { println!(); Ok(()) }
-    async fn on_error(&self, error: &KovaError) { eprintln!("Stream error: {error}"); }
 }
-
-let agent = AgentBuilder::new()
-    .provider(provider)
-    .streaming_handler(Arc::new(MyHandler))
-    .build()?;
-
-let text = agent.chat_stream("conv-1", "Tell me a story").await?;
-```
-
-## Orchestrator
-
-```rust
-use kova_sdk::orchestrator::{Orchestrator, OrchestratorPattern, OrchestratorOutput};
-use std::collections::HashMap;
-use std::time::Duration;
-
-let mut agents = HashMap::new();
-agents.insert("summarizer".into(), Arc::new(summarizer_agent));
-agents.insert("translator".into(), Arc::new(translator_agent));
-agents.insert("router".into(),     Arc::new(router_agent));
-
-let orch = Orchestrator::new(agents, Duration::from_secs(120));
-
-// Sequential
-let OrchestratorOutput::Single(text) = orch.execute(
-    OrchestratorPattern::Sequential(vec!["summarizer".into(), "translator".into()]),
-    "Long article...",
-).await? else { unreachable!() };
-
-// Parallel
-let OrchestratorOutput::Parallel(result) = orch.execute(
-    OrchestratorPattern::Parallel(vec!["summarizer".into(), "translator".into()]),
-    "Analyze this...",
-).await? else { unreachable!() };
-for (name, text) in &result.successes { println!("{name}: {text}"); }
-for (name, err)  in &result.failures  { eprintln!("{name}: {err}"); }
-
-// Router
-orch.execute(
-    OrchestratorPattern::Router {
-        router_agent: "router".into(),
-        downstream: vec!["summarizer".into(), "translator".into()],
-    },
-    "Translate this to French...",
-).await?;
 ```
 
 ## Telemetry
@@ -540,17 +528,16 @@ println!("errors:   {}", m.error_count());
 ## Error Handling
 
 ```rust
-use kova_sdk::error::KovaError;
+use kova_sdk::error::{KovaError, ProviderErrorClass};
 
 match result {
-    Err(KovaError::Provider { message, status_code }) => { /* LLM API error */ }
+    Err(KovaError::Provider { message, status_code, class }) => { /* LLM API error */ }
     Err(KovaError::Connection(msg))                  => { /* Network unreachable */ }
     Err(KovaError::ToolExecution { tool_name, .. })  => { /* Tool panicked/failed */ }
     Err(KovaError::ToolNotFound(name))               => { /* LLM called unknown tool */ }
     Err(KovaError::Timeout(duration))                => { /* Request timed out */ }
     Err(KovaError::Mcp(msg))                         => { /* MCP protocol error */ }
     Err(KovaError::Memory(msg))                      => { /* Memory store error */ }
-    Err(KovaError::Orchestration(msg))               => { /* Orchestrator error */ }
     Err(KovaError::Build(msg))                       => { /* Builder misconfiguration */ }
     Err(KovaError::Stream(msg))                      => { /* Streaming error */ }
     Err(KovaError::MaxIterations(n))                 => { /* Tool loop hit cap */ }
@@ -560,6 +547,31 @@ match result {
     _ => {}
 }
 ```
+
+### Provider error classification
+
+`KovaError::Provider` carries a `class: ProviderErrorClass` so applications can
+react precisely without inspecting messages or status codes:
+
+```rust
+match err.provider_class() {
+    Some(ProviderErrorClass::AuthInvalid)              => { /* 401 — prompt for a new key */ }
+    Some(ProviderErrorClass::AuthForbidden)            => { /* 403 — key lacks access */ }
+    Some(ProviderErrorClass::RateLimited { retry_after }) => { /* 429 — back off */ }
+    Some(ProviderErrorClass::Overloaded)               => { /* 408/5xx/529 — transient, retryable */ }
+    Some(ProviderErrorClass::InvalidRequest)           => { /* 400/413/422 — incl. context length */ }
+    Some(ProviderErrorClass::NotFound)                 => { /* 404 — unknown model/endpoint */ }
+    Some(ProviderErrorClass::Other) | None             => { /* everything else */ }
+}
+```
+
+Constructors: `KovaError::provider_http(status, retry_after, message)` (classifies
+from the status), `KovaError::provider_invalid(message)` (malformed responses),
+`KovaError::provider_auth(message)` (pre-HTTP credential failures, e.g. an empty
+AWS credential chain). `err.is_retryable()` is true for `RateLimited` and
+`Overloaded` classes plus connection failures and timeouts. Bedrock exception
+types (`ThrottlingException`, `AccessDeniedException`, …) are normalized to
+statuses before classification.
 
 ## Data Types
 

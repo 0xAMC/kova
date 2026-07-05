@@ -56,6 +56,9 @@ pub(crate) struct OaiChatCompletionRequest {
     // OpenAI o-series: "low" | "medium" | "high"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) reasoning_effort: Option<String>,
+    /// Structured output: `{"type": "json_schema", "json_schema": {...}}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_format: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -85,12 +88,22 @@ pub(crate) struct OaiUsage {
     /// Present for o-series reasoning models; carries `reasoning_tokens`.
     #[serde(default)]
     pub(crate) completion_tokens_details: Option<OaiCompletionTokensDetails>,
+    /// Carries `cached_tokens` (prompt tokens served from OpenAI's automatic
+    /// prompt cache) when the API reports it.
+    #[serde(default)]
+    pub(crate) prompt_tokens_details: Option<OaiPromptTokensDetails>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub(crate) struct OaiCompletionTokensDetails {
     #[serde(default)]
     pub(crate) reasoning_tokens: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct OaiPromptTokensDetails {
+    #[serde(default)]
+    pub(crate) cached_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

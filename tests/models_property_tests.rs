@@ -60,6 +60,8 @@ fn arb_usage_stats() -> impl Strategy<Value = UsageStats> {
         output_tokens,
         total_tokens: input_tokens.saturating_add(output_tokens),
         thinking_tokens: None,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
     })
 }
 
@@ -195,14 +197,8 @@ proptest! {
 #[test]
 fn prop_error_display_non_empty() {
     let variants: Vec<KovaError> = vec![
-        KovaError::Provider {
-            message: "test".into(),
-            status_code: Some(500),
-        },
-        KovaError::Provider {
-            message: "test".into(),
-            status_code: None,
-        },
+        KovaError::provider_http(500, None, "test"),
+        KovaError::provider_invalid("test"),
         KovaError::Connection("timeout".into()),
         KovaError::ToolExecution {
             tool_name: "calc".into(),
@@ -210,8 +206,6 @@ fn prop_error_display_non_empty() {
         },
         KovaError::ToolNotFound("missing".into()),
         KovaError::Mcp("connection refused".into()),
-        KovaError::Memory("full".into()),
-        KovaError::Orchestration("timeout".into()),
         KovaError::Build("missing provider".into()),
         KovaError::Stream("eof".into()),
         KovaError::MaxIterations(10),

@@ -262,7 +262,9 @@ pub(crate) fn format_request(
                                 thought_signature,
                             })
                         }
-                        ContentBlock::ToolResult { .. } => {}
+                        // Signed reasoning blocks are Anthropic-specific;
+                        // Gemini carries thought signatures on ToolUse instead.
+                        ContentBlock::ToolResult { .. } | ContentBlock::Thinking { .. } => {}
                     }
                 }
                 if !parts.is_empty() {
@@ -300,6 +302,7 @@ pub(crate) fn format_request(
         || config.top_p.is_some()
         || config.stop_sequences.is_some()
         || thinking_config.is_some()
+        || config.response_format.is_some()
     {
         Some(GeminiGenerationConfig {
             max_output_tokens: config.max_tokens,
@@ -307,6 +310,14 @@ pub(crate) fn format_request(
             top_p: config.top_p,
             stop_sequences: config.stop_sequences.clone(),
             thinking_config,
+            response_mime_type: config
+                .response_format
+                .as_ref()
+                .map(|_| "application/json".to_string()),
+            response_schema: config
+                .response_format
+                .as_ref()
+                .map(|f| sanitize_schema_for_gemini(&f.schema)),
         })
     } else {
         None
@@ -342,15 +353,11 @@ fn candidate_stop_reason(candidate: &GeminiCandidate) -> StopReason {
 }
 
 pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelResponse, KovaError> {
-    let candidate =
-        gemini_resp
-            .candidates
-            .into_iter()
-            .next()
-            .ok_or_else(|| KovaError::Provider {
-                message: "No candidates in response".to_string(),
-                status_code: None,
-            })?;
+    let candidate = gemini_resp
+        .candidates
+        .into_iter()
+        .next()
+        .ok_or_else(|| KovaError::provider_invalid("No candidates in response".to_string()))?;
 
     let stop_reason = candidate_stop_reason(&candidate);
 
@@ -389,6 +396,8 @@ pub(crate) fn format_response(gemini_resp: GeminiResponse) -> Result<ModelRespon
         output_tokens: u.candidates_token_count,
         total_tokens: u.total_token_count,
         thinking_tokens: u.thoughts_token_count,
+        cache_read_tokens: None,
+        cache_creation_tokens: None,
     });
 
     let thinking = if thinking_parts.is_empty() {
@@ -422,6 +431,8 @@ pub(crate) fn format_stream_events(chunk: GeminiResponse) -> Vec<StreamEvent> {
             input_tokens: usage.prompt_token_count,
             output_tokens,
             thinking_tokens: usage.thoughts_token_count,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         });
     }
 
@@ -1229,5 +1240,31 @@ mod tests {
             }
             other => panic!("Expected ToolUse, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn response_format_maps_to_response_schema() {
+        let config = InferenceConfig {
+            model: Some("gemini-2.5-flash".to_string()),
+            response_format: Some(crate::models::ResponseFormat::new(serde_json::json!({
+                "type": "object",
+                "properties": {"route": {"type": "string"}},
+                "additionalProperties": false
+            }))),
+            ..Default::default()
+        };
+        let req = format_request(&[user_msg("hi")], &[], &config, None);
+        let gen_cfg = req.generation_config.expect("generation config set");
+        assert_eq!(
+            gen_cfg.response_mime_type.as_deref(),
+            Some("application/json")
+        );
+        let schema = gen_cfg.response_schema.expect("schema present");
+        // Sanitizer strips additionalProperties (unsupported by Gemini).
+        assert!(schema.get("additionalProperties").is_none());
+        assert_eq!(schema["type"], "object");
+
+        let req = format_request(&[user_msg("hi")], &[], &InferenceConfig::default(), None);
+        assert!(req.generation_config.is_none());
     }
 }

@@ -44,6 +44,23 @@ pub(crate) enum BedrockContentBlock {
     ReasoningContent {
         reasoning_text: BedrockReasoningText,
     },
+    /// Prompt-cache breakpoint (`{"cachePoint": {"type": "default"}}`).
+    /// Request-only; never appears in responses.
+    CachePoint(BedrockCachePoint),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub(crate) struct BedrockCachePoint {
+    #[serde(rename = "type")]
+    pub(crate) point_type: String,
+}
+
+impl BedrockCachePoint {
+    pub(crate) fn default_point() -> Self {
+        Self {
+            point_type: "default".to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -57,8 +74,15 @@ pub(crate) struct BedrockToolResultContent {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct BedrockSystemBlock {
-    pub(crate) text: String,
+#[serde(untagged)]
+pub(crate) enum BedrockSystemBlock {
+    Text {
+        text: String,
+    },
+    CachePoint {
+        #[serde(rename = "cachePoint")]
+        cache_point: BedrockCachePoint,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +143,12 @@ pub(crate) struct BedrockUsage {
     pub(crate) input_tokens: u32,
     pub(crate) output_tokens: u32,
     pub(crate) total_tokens: u32,
+    /// Prompt tokens served from the Bedrock prompt cache (cachePoint models).
+    #[serde(default)]
+    pub(crate) cache_read_input_tokens: Option<u32>,
+    /// Prompt tokens written to the Bedrock prompt cache.
+    #[serde(default)]
+    pub(crate) cache_write_input_tokens: Option<u32>,
 }
 
 // ── Stream event types ─────────────────────────────────────────────

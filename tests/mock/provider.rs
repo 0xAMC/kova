@@ -84,6 +84,8 @@ pub fn make_text_response(text: &str) -> ModelResponse {
             output_tokens: 5,
             total_tokens: 15,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }),
         thinking: None,
     }
@@ -110,6 +112,8 @@ pub fn make_tool_call_response(
             output_tokens: 5,
             total_tokens: 15,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         }),
         thinking: None,
     }
@@ -167,4 +171,18 @@ impl LlmProvider for CapturingMockProvider {
     async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> {
         Ok(vec![])
     }
+}
+
+/// Run a single-user-message turn and return the assistant text.
+///
+/// Test convenience replacing the removed stateful `Agent::chat` wrapper —
+/// the agent is stateless, so the host constructs the one-message history.
+pub async fn run_text(agent: &kova_sdk::agent::Agent, text: &str) -> Result<String, KovaError> {
+    let messages = [ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+    }];
+    agent.run(&messages).await.map(|r| r.text)
 }

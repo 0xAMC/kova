@@ -93,6 +93,8 @@ fn arb_bedrock_metadata() -> impl Strategy<Value = BedrockStreamEvent> {
                 input_tokens,
                 output_tokens,
                 total_tokens: input_tokens + output_tokens,
+                cache_read_input_tokens: None,
+                cache_write_input_tokens: None,
             },
         }
     })
@@ -168,12 +170,16 @@ fn arb_bedrock_event_with_expected() -> impl Strategy<Value = (BedrockStreamEven
                     input_tokens,
                     output_tokens,
                     total_tokens: input_tokens + output_tokens,
+                    cache_read_input_tokens: None,
+                    cache_write_input_tokens: None,
                 },
             };
             let expected = StreamEvent::UsageEvent {
                 input_tokens,
                 output_tokens,
                 thinking_tokens: None,
+                cache_read_tokens: None,
+                cache_creation_tokens: None,
             };
             (event, expected)
         }),
@@ -185,6 +191,7 @@ fn message_for_block(block: &ContentBlock) -> ConversationMessage {
         ContentBlock::Text { .. } => Role::User,
         ContentBlock::ToolUse { .. } => Role::Assistant,
         ContentBlock::ToolResult { .. } => Role::User,
+        ContentBlock::Thinking { .. } => Role::Assistant,
     };
     ConversationMessage {
         role,
@@ -206,6 +213,8 @@ fn fake_response(content: Vec<BedrockContentBlock>) -> BedrockConverseResponse {
             input_tokens: 1,
             output_tokens: 1,
             total_tokens: 2,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     }
 }
@@ -224,6 +233,8 @@ fn response_with_stop_reason(stop_reason: &str) -> BedrockConverseResponse {
             input_tokens: 1,
             output_tokens: 1,
             total_tokens: 2,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     }
 }
@@ -233,7 +244,7 @@ proptest! {
     fn prop_content_block_round_trip(block in arb_content_block()) {
         let msg = message_for_block(&block);
         let config = InferenceConfig::default();
-        let request = format_request(&[msg], &[], &config, None);
+        let request = format_request(&[msg], &[], &config, None, false);
         let bedrock_blocks = request.messages[0].content.clone();
         let response = fake_response(bedrock_blocks);
         let model_resp = format_response(response).unwrap();
@@ -251,7 +262,7 @@ proptest! {
             role: Role::User,
             content: vec![ContentBlock::Text { text: "hi".to_string() }],
         };
-        let request = format_request(&[msg], &[], &config, None);
+        let request = format_request(&[msg], &[], &config, None, false);
         let json_val = serde_json::to_value(&request).unwrap();
         let inf = &json_val["inferenceConfig"];
         match max_tokens {
@@ -284,7 +295,7 @@ proptest! {
             role: Role::User,
             content: vec![ContentBlock::Text { text: "hi".to_string() }],
         };
-        let request = format_request(&[msg], &[tool], &InferenceConfig::default(), None);
+        let request = format_request(&[msg], &[tool], &InferenceConfig::default(), None, false);
         let json_val = serde_json::to_value(&request).unwrap();
         let tool_spec = &json_val["toolConfig"]["tools"][0]["toolSpec"];
         prop_assert_eq!(tool_spec["name"].as_str().unwrap(), name.as_str());
@@ -307,7 +318,7 @@ proptest! {
                 content: vec![ContentBlock::Text { text: user_text.clone() }],
             },
         ];
-        let request = format_request(&messages, &[], &InferenceConfig::default(), None);
+        let request = format_request(&messages, &[], &InferenceConfig::default(), None, false);
         let json_val = serde_json::to_value(&request).unwrap();
         let system_arr = json_val["system"].as_array().unwrap();
         let system_texts: Vec<&str> = system_arr.iter().map(|s| s["text"].as_str().unwrap()).collect();
@@ -364,7 +375,7 @@ fn test_format_request_serialization() {
             text: "Hello, world!".to_string(),
         }],
     };
-    let request = format_request(&[msg], &[], &InferenceConfig::default(), None);
+    let request = format_request(&[msg], &[], &InferenceConfig::default(), None, false);
     let json_val = serde_json::to_value(&request).unwrap();
     assert_eq!(json_val["messages"][0]["role"], "user");
     assert_eq!(
@@ -389,6 +400,8 @@ fn test_format_response_deserialization() {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -427,7 +440,7 @@ fn test_tool_definition_complex_schema() {
             text: "hi".to_string(),
         }],
     };
-    let request = format_request(&[msg], &[tool], &InferenceConfig::default(), None);
+    let request = format_request(&[msg], &[tool], &InferenceConfig::default(), None, false);
     let json_val = serde_json::to_value(&request).unwrap();
     let tool_spec = &json_val["toolConfig"]["tools"][0]["toolSpec"];
     assert_eq!(tool_spec["name"], "search");
@@ -463,7 +476,7 @@ fn test_system_message_extraction_mixed() {
             }],
         },
     ];
-    let request = format_request(&messages, &[], &InferenceConfig::default(), None);
+    let request = format_request(&messages, &[], &InferenceConfig::default(), None, false);
     let json_val = serde_json::to_value(&request).unwrap();
     let system_arr = json_val["system"].as_array().unwrap();
     assert_eq!(system_arr.len(), 1);
@@ -519,7 +532,7 @@ fn test_empty_tools_no_tool_config() {
             text: "hi".to_string(),
         }],
     };
-    let request = format_request(&[msg], &[], &InferenceConfig::default(), None);
+    let request = format_request(&[msg], &[], &InferenceConfig::default(), None, false);
     let json_val = serde_json::to_value(&request).unwrap();
     assert!(json_val.get("toolConfig").is_none());
 }
@@ -608,6 +621,8 @@ fn test_format_stream_event_metadata_emits_usage() {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     assert_eq!(
@@ -616,6 +631,8 @@ fn test_format_stream_event_metadata_emits_usage() {
             input_tokens: 10,
             output_tokens: 5,
             thinking_tokens: None,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
         })
     );
 }
@@ -708,6 +725,8 @@ fn test_format_response_reasoning_content_populates_thinking_field() {
             input_tokens: 10,
             output_tokens: 5,
             total_tokens: 15,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -751,6 +770,8 @@ fn test_format_response_multiple_reasoning_blocks_joined() {
             input_tokens: 5,
             output_tokens: 3,
             total_tokens: 8,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -779,6 +800,8 @@ fn test_format_response_reasoning_content_excluded_from_content_blocks() {
             input_tokens: 2,
             output_tokens: 1,
             total_tokens: 3,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -811,6 +834,8 @@ fn test_format_response_empty_reasoning_text_not_included_in_thinking() {
             input_tokens: 2,
             output_tokens: 1,
             total_tokens: 3,
+            cache_read_input_tokens: None,
+            cache_write_input_tokens: None,
         },
     };
     let model_resp = format_response(resp).unwrap();
@@ -818,4 +843,61 @@ fn test_format_response_empty_reasoning_text_not_included_in_thinking() {
         model_resp.thinking.is_none(),
         "Empty reasoning text should not populate thinking field"
     );
+}
+
+#[test]
+fn cache_flag_places_cache_points_and_usage_maps_cache_tokens() {
+    let messages = vec![
+        ConversationMessage {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: "sys".to_string(),
+            }],
+        },
+        ConversationMessage {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+        },
+    ];
+    let request = format_request(&messages, &[], &InferenceConfig::default(), None, true);
+    let body = serde_json::to_value(&request).unwrap();
+    // cachePoint appended after the system prompt…
+    let system = body["system"].as_array().unwrap();
+    assert_eq!(system.len(), 2);
+    assert_eq!(system[1]["cachePoint"]["type"], "default");
+    // …and after the last message's content.
+    let last_content = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(
+        last_content.last().unwrap()["cachePoint"]["type"],
+        "default"
+    );
+
+    // Off by default: no cachePoint anywhere.
+    let request = format_request(&messages, &[], &InferenceConfig::default(), None, false);
+    let body = serde_json::to_value(&request).unwrap();
+    assert_eq!(body["system"].as_array().unwrap().len(), 1);
+    assert!(
+        body["messages"][0]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|b| b.get("cachePoint").is_none())
+    );
+
+    // Converse usage fields map onto the canonical cache counters.
+    let resp: BedrockConverseResponse = serde_json::from_value(serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+        "stopReason": "end_turn",
+        "usage": {
+            "inputTokens": 4, "outputTokens": 2, "totalTokens": 6,
+            "cacheReadInputTokens": 300, "cacheWriteInputTokens": 50
+        }
+    }))
+    .unwrap();
+    let out = format_response(resp).unwrap();
+    let usage = out.usage.unwrap();
+    assert_eq!(usage.cache_read_tokens, Some(300));
+    assert_eq!(usage.cache_creation_tokens, Some(50));
 }

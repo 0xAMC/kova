@@ -47,6 +47,7 @@ fn sample_oai_response() -> OaiChatCompletionResponse {
             completion_tokens: 3,
             total_tokens: 8,
             completion_tokens_details: None,
+            prompt_tokens_details: None,
         }),
     }
 }
@@ -490,7 +491,7 @@ proptest! {
         let result = format_response(oai_response);
         prop_assert!(result.is_err());
         match result.unwrap_err() {
-            KovaError::Provider { message, status_code } => {
+            KovaError::Provider { message, status_code, .. } => {
                 prop_assert!(message.contains("Unrecognized role"));
                 prop_assert!(message.contains(&role));
                 prop_assert_eq!(status_code, None);
@@ -621,4 +622,39 @@ fn test_format_stream_event_finish_reason_with_reasoning_all_emitted() {
             .iter()
             .any(|e| matches!(e, StreamEvent::ContentDelta { .. }))
     );
+}
+
+fn rf_user_msg(text: &str) -> ConversationMessage {
+    ConversationMessage {
+        role: Role::User,
+        content: vec![ContentBlock::Text {
+            text: text.to_string(),
+        }],
+    }
+}
+
+#[test]
+fn response_format_maps_to_openai_json_schema() {
+    let config = InferenceConfig {
+        model: Some("gpt-5.1".into()),
+        response_format: Some(kova_schema()),
+        ..Default::default()
+    };
+    let req = format_request(&[rf_user_msg("hi")], &[], &config);
+    let rf = serde_json::to_value(req.response_format.unwrap()).unwrap();
+    assert_eq!(rf["type"], "json_schema");
+    assert_eq!(rf["json_schema"]["name"], "route");
+    assert_eq!(rf["json_schema"]["strict"], true);
+    assert_eq!(rf["json_schema"]["schema"]["type"], "object");
+
+    // Absent by default.
+    let req = format_request(&[rf_user_msg("hi")], &[], &InferenceConfig::default());
+    assert!(req.response_format.is_none());
+}
+
+fn kova_schema() -> crate::models::ResponseFormat {
+    crate::models::ResponseFormat::named(
+        "route",
+        serde_json::json!({"type": "object", "properties": {"route": {"type": "string"}}}),
+    )
 }
