@@ -203,7 +203,7 @@ impl Agent {
         let value: T = serde_json::from_str(response.text.trim()).map_err(|e| {
             KovaError::provider_invalid(format!(
                 "structured output did not match the requested schema: {e} (text: {})",
-                &response.text.chars().take(200).collect::<String>()
+                response.text.chars().take(200).collect::<String>()
             ))
         })?;
         Ok((value, response))
