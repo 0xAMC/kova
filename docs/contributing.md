@@ -13,8 +13,8 @@
 1. Create `src/provider/<name>/` with `mod.rs`, `config.rs`, `provider.rs`, `convert.rs`, `types.rs`.
 2. Implement `LlmProvider` for both `chat_completion` (blocking) and `chat_completion_stream` (streaming).
 3. Implement `list_models`.
-4. Re-export from `src/provider/mod.rs`.
-5. Add integration tests under `tests/`.
+4. Gate the module behind a new Cargo feature (empty `[]` unless it pulls its own dependencies, like `bedrock` does) and re-export it from `src/provider/mod.rs` behind `#[cfg(feature = "<name>")]`.
+5. Add tests: wire-format conversion (request/response shapes) as `#[cfg(test)]` unit tests in `convert.rs` is usually enough (see `anthropic`); reach for a `tests/<name>_integration.rs` only when the provider needs real credentials or infra to exercise end-to-end (see `bedrock_integration.rs`).
 
 ## Adding a Tool
 
@@ -109,9 +109,14 @@ cargo test -p kova-sdk property
 | Flag | Default | Effect |
 |------|---------|--------|
 | `telemetry` | off | Enables OTEL crates; `TelemetryConfig` uses a full pipeline |
+| `bedrock` | on | Pulls in the AWS SDK crates (`aws-sigv4`, `aws-config`, …) for `BedrockProvider` |
 | `tools` | off | Built-in filesystem + shell tools (`glob`, `regex`, `diffy`) |
 | `web-tools` | off | Adds `fetch_webpage` + the `fetch_text` SSRF-guarded HTTP helper (`scraper`, `dom_smoothie`, `htmd`, `tokio/net`); implies `tools` |
 
-Keep the feature flags in mind when adding new dependencies — OTEL crates and the
-web-tool HTML stack are heavy and should not be compiled for users who don't need
-them. Run `cargo test --features web-tools` to exercise the tool suite.
+`openai`, `anthropic`, `gemini`, and `ollama` are also feature flags (all on by
+default) but add no dependencies of their own, so they're omitted above.
+
+Keep the feature flags in mind when adding new dependencies — OTEL crates, the AWS
+SDK stack, and the web-tool HTML stack are heavy and should not be compiled for
+users who don't need them. Run `cargo test --features web-tools` to exercise the
+tool suite.

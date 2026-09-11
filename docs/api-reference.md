@@ -105,6 +105,19 @@ let config = OpenAiProviderConfig::new("https://api.openai.com", "gpt-4")
 let provider = Arc::new(OpenAiCompatibleProvider::new(config)?);
 ```
 
+| Field | Default | Description |
+|-------|---------|-------------|
+| `base_url` | required | API base URL |
+| `model` | required | Model identifier |
+| `api_key` | `None` | Bearer token |
+| `timeout` | 30s | Request timeout |
+| `max_tokens` | `None` | Max completion tokens |
+| `temperature` | `None` | Sampling temperature |
+| `chat_completions_path` | `/v1/chat/completions` | Chat endpoint path |
+| `models_path` | `/v1/models` | Models list endpoint path |
+| `api_version` | `None` | Query param (e.g. Azure `api-version`) |
+| `reasoning_effort` | `None` | `"low"` / `"medium"` / `"high"` — o-series models only |
+
 ### Anthropic (native Messages API)
 
 ```rust
@@ -124,49 +137,20 @@ on every request, so the stable prefix (system prompt, tools, prior turns) is
 served from Anthropic's cache; per-call reads/writes surface as
 `UsageStats::cache_read_tokens` / `cache_creation_tokens`. Signed thinking
 blocks round-trip through history as `ContentBlock::Thinking` — required for
-tool loops with extended thinking.
-
-## Structured output
-
-Constrain a turn's final text to a JSON schema and parse it in one call:
-
-```rust
-use kova_sdk::models::ResponseFormat;
-
-#[derive(serde::Deserialize)]
-struct Route { route: String, confidence: f64 }
-
-let format = ResponseFormat::named("route", serde_json::json!({
-    "type": "object",
-    "properties": {
-        "route": {"type": "string"},
-        "confidence": {"type": "number"}
-    },
-    "required": ["route", "confidence"],
-    "additionalProperties": false
-}));
-
-let (route, response) = agent.run_structured::<Route>(&messages, format).await?;
-```
-
-`response_format` can also be set on `InferenceConfig` directly (or per call via
-`run_with_config`). Mapping is native per provider — OpenAI `response_format`
-(strict), Anthropic `output_config.format`, Gemini `responseSchema`, Ollama
-`format`; Bedrock rejects it (no native support).
-
+tool loops with extended thinking. `count_tokens` calls the native
+`/v1/messages/count_tokens` endpoint instead of the default offline heuristic.
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `base_url` | required | API base URL |
-| `model` | required | Model identifier |
-| `api_key` | `None` | Bearer token |
-| `timeout` | 30s | Request timeout |
-| `max_tokens` | `None` | Max completion tokens |
-| `temperature` | `None` | Sampling temperature |
-| `chat_completions_path` | `/v1/chat/completions` | Chat endpoint path |
-| `models_path` | `/v1/models` | Models list endpoint path |
-| `api_version` | `None` | Query param (e.g. Azure `api-version`) |
-| `reasoning_effort` | `None` | `"low"` / `"medium"` / `"high"` — o-series models only |
+| `base_url` | `https://api.anthropic.com` | API base URL |
+| `model` | required | Model identifier, e.g. `"claude-opus-4-8"` |
+| `api_key` | `None` | Sent as `x-api-key` |
+| `timeout` | 300s | Request timeout (thinking models can run long) |
+| `default_max_tokens` | 32000 | Used when the request's `InferenceConfig` sets no `max_tokens` — the Messages API requires one |
+| `adaptive_thinking` | `true` | Sends `thinking: {"type": "adaptive"}` |
+| `effort` | `None` | `output_config.effort`: `"low"` / `"medium"` / `"high"` / `"xhigh"` / `"max"` |
+| `cache` | `true` | Automatic prompt caching via `cache_control` |
+| `api_version` | `"2023-06-01"` | `anthropic-version` header |
 
 ### AWS Bedrock
 
@@ -310,8 +294,40 @@ impl LlmProvider for MyProvider {
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, KovaError> { todo!() }
+
+    // Optional — defaults to an offline ~4-chars/token heuristic. Override
+    // only if your provider has a native counting endpoint (as Anthropic does).
+    // async fn count_tokens(&self, messages: &[ConversationMessage], tools: &[ToolDefinition]) -> Result<u32, KovaError> { todo!() }
 }
 ```
+
+## Structured Output
+
+Constrain a turn's final text to a JSON schema and parse it in one call:
+
+```rust
+use kova_sdk::models::ResponseFormat;
+
+#[derive(serde::Deserialize)]
+struct Route { route: String, confidence: f64 }
+
+let format = ResponseFormat::named("route", serde_json::json!({
+    "type": "object",
+    "properties": {
+        "route": {"type": "string"},
+        "confidence": {"type": "number"}
+    },
+    "required": ["route", "confidence"],
+    "additionalProperties": false
+}));
+
+let (route, response) = agent.run_structured::<Route>(&messages, format).await?;
+```
+
+`response_format` can also be set on `InferenceConfig` directly (or per call via
+`run_with_config`). Mapping is native per provider — OpenAI `response_format`
+(strict), Anthropic `output_config.format`, Gemini `responseSchema`, Ollama
+`format`; Bedrock rejects it (no native support).
 
 ## Tools
 
@@ -365,7 +381,7 @@ let defs  = registry.tool_definitions().await;           // Vec<ToolDefinition> 
 against an injected `ToolPolicy`:
 
 ```toml
-kova-sdk = { version = "0.3", features = ["web-tools"] }
+kova-sdk = { version = "0.9", features = ["web-tools"] }
 ```
 
 | Feature | Tools |
@@ -493,6 +509,35 @@ while let Some(event) = stream.next().await {
 }
 ```
 
+## Embeddings
+
+kova ships no vector store — `EmbeddingProvider` is the input seam for retrieval
+systems built on top; chunking, indexing, and search stay with the host.
+
+```rust
+use kova_sdk::embedding::EmbeddingProvider;
+use kova_sdk::embedding::openai::OpenAiEmbeddingProvider;
+
+let embedder = OpenAiEmbeddingProvider::new("https://api.openai.com", "text-embedding-3-small")?
+    .with_api_key("sk-...")
+    .with_dimensions(512); // optional: request reduced-dimension vectors
+
+let vectors = embedder.embed(&["hello world".into(), "second doc".into()]).await?;
+```
+
+```rust
+use kova_sdk::embedding::ollama::OllamaEmbeddingProvider;
+
+// POST /api/embed against a local or remote Ollama instance — no API key
+let embedder = OllamaEmbeddingProvider::new("http://localhost:11434", "nomic-embed-text")?;
+let vectors = embedder.embed(&["hello world".into()]).await?;
+```
+
+| Method | Description |
+|--------|-------------|
+| `embed(&[String]) -> Vec<Vec<f32>>` | One vector per input, in the same order |
+| `dimensions() -> Option<usize>` | Vector width when known up front; `None` = discover from the first call |
+
 ## Telemetry
 
 ```rust
@@ -537,13 +582,13 @@ match result {
     Err(KovaError::ToolNotFound(name))               => { /* LLM called unknown tool */ }
     Err(KovaError::Timeout(duration))                => { /* Request timed out */ }
     Err(KovaError::Mcp(msg))                         => { /* MCP protocol error */ }
-    Err(KovaError::Memory(msg))                      => { /* Memory store error */ }
     Err(KovaError::Build(msg))                       => { /* Builder misconfiguration */ }
     Err(KovaError::Stream(msg))                      => { /* Streaming error */ }
     Err(KovaError::MaxIterations(n))                 => { /* Tool loop hit cap */ }
+    Err(KovaError::Cancelled)                        => { /* Turn cancelled via CancellationToken */ }
+    Err(KovaError::ContextBudgetExceeded { measured, budget }) => { /* Prompt over AgentBuilder::context_budget */ }
     Err(KovaError::Serialization(e))                 => { /* JSON error */ }
     Err(KovaError::Io(e))                            => { /* I/O error */ }
-    Err(KovaError::Http(e))                          => { /* HTTP client error */ }
     _ => {}
 }
 ```
@@ -578,13 +623,14 @@ statuses before classification.
 | Type | Description |
 |------|-------------|
 | `Role` | `User`, `Assistant`, `System`, `Tool` |
-| `ContentBlock` | `Text { text }`, `ToolUse { id, name, input }`, `ToolResult { tool_use_id, content, is_error }` |
+| `ContentBlock` | `Text { text }`, `ToolUse { id, name, input, provider_metadata }`, `ToolResult { tool_use_id, content, is_error }`, `Thinking { thinking, signature }` (Anthropic only; round-trips verbatim in history) |
 | `ConversationMessage` | `role: Role` + `content: Vec<ContentBlock>` |
 | `ModelResponse` | `content`, `stop_reason`, `usage: Option<UsageStats>`, `thinking: Option<String>` |
 | `StopReason` | `EndTurn`, `ToolUse`, `MaxTokens`, `Unknown(String)` |
-| `UsageStats` | `input_tokens`, `output_tokens`, `total_tokens` |
-| `InferenceConfig` | `model`, `max_tokens`, `temperature` (all `Option`) |
+| `UsageStats` | `input_tokens`, `output_tokens`, `total_tokens`, `thinking_tokens: Option<u32>`, `cache_read_tokens: Option<u32>`, `cache_creation_tokens: Option<u32>` (`None` = provider doesn't report it) |
+| `InferenceConfig` | `model`, `max_tokens`, `temperature`, `top_p`, `stop_sequences: Option<Vec<String>>`, `response_format: Option<ResponseFormat>` (all `Option`) |
+| `ResponseFormat` | `name: Option<String>` + `schema: Value` — a JSON-schema constraint on the final text; construct via `ResponseFormat::new(schema)` or `::named(name, schema)` |
 | `ToolDefinition` | `name`, `description`, `parameters` (JSON Schema `Value`) |
 | `ToolResult` | `content: String`, `is_error: bool` |
-| `StreamEvent` | `ContentDelta { text }`, `ThinkingDelta { text }`, `ToolUseDelta { … }`, `StopEvent`, `Error`, `UsageEvent { input_tokens, output_tokens }` |
+| `StreamEvent` | `ContentDelta { text }`, `ThinkingDelta { text }`, `ThinkingBlock { thinking, signature }` (Anthropic; feeds history, not display), `ToolUseDelta { … }`, `StopEvent`, `Error`, `UsageEvent { input_tokens, output_tokens, thinking_tokens, cache_read_tokens, cache_creation_tokens }` |
 | `ModelInfo` | `id`, `object`, `created`, `owned_by` |
