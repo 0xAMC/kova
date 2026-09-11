@@ -52,17 +52,20 @@ run(messages)   // caller-owned history in
 
 ## Provider Abstraction
 
-`LlmProvider` is an object-safe async trait. Both implementations (`OpenAiCompatibleProvider`, `BedrockProvider`) are stateless HTTP clients — all mutable state lives in the caller.
+`LlmProvider` is an object-safe async trait. All five implementations are stateless HTTP clients — all mutable state lives in the caller.
 
 ```
 LlmProvider (trait, object-safe)
+ ├── AnthropicProvider          ← reqwest + native Messages API SSE, adaptive thinking, prompt caching
  ├── OpenAiCompatibleProvider   ← reqwest + SSE parsing
  ├── BedrockProvider            ← aws-sdk + SigV4 + ConverseStream
  ├── GeminiProvider             ← reqwest + SSE (alt=sse), x-goog-api-key, thinking-model filtering
  └── OllamaProvider             ← reqwest + NDJSON streaming, no auth, /api/chat + /api/tags
 ```
 
-**Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes. `ThinkingDelta` events surface as `AgentEvent::ThinkingDelta` on `run_stream` but are otherwise ignored by the tool-call accumulator.
+**Streaming contract**: `chat_completion_stream` returns a `Pin<Box<dyn Stream<…> + Send>>`. The agent polls this stream, accumulates `ToolUseDelta` events into complete tool-call records, then executes them after the stream closes. `ThinkingDelta` events surface as `AgentEvent::ThinkingDelta` on `run_stream` but are otherwise ignored by the tool-call accumulator. `ThinkingBlock` events (Anthropic only) instead feed the accumulator, since they must be preserved verbatim as a `ContentBlock::Thinking` — surfacing the text once via `ThinkingDelta` would double it.
+
+**Anthropic path (native Messages API)**: `AnthropicProvider` speaks `POST /v1/messages` directly rather than going through the OpenAI-compatible shape. `AnthropicProviderConfig` defaults `adaptive_thinking` and `cache` to on — every request sends `thinking: {"type": "adaptive"}` and a top-level `cache_control: {"type": "ephemeral"}` that marks the stable prefix (system prompt, tools, prior turns) for Anthropic's prompt cache; `with_effort("low".."max")` maps to `output_config.effort`. It is also the only provider overriding `LlmProvider::count_tokens` with an exact call to `/v1/messages/count_tokens` instead of the offline heuristic. Because Anthropic requires a *signed* thinking block echoed back unchanged on the next tool-use turn, its reasoning output round-trips as `ContentBlock::Thinking { thinking, signature }` in conversation history — the one case where "thinking never touches history" (see below) doesn't hold. Other providers drop `Thinking` blocks when building requests, so cross-provider history stays valid.
 
 **OpenAI path override**: `OpenAiProviderConfig` exposes `with_chat_completions_path` and `with_models_path` so Azure deployments, local servers, and proxies can override the default `/v1/chat/completions` and `/v1/models` paths without subclassing. `with_reasoning_effort` sets the `reasoning_effort` field for o-series models.
 
@@ -72,7 +75,7 @@ LlmProvider (trait, object-safe)
 
 **Ollama streaming**: uses newline-delimited JSON (NDJSON) over `/api/chat` rather than SSE. Each line is a complete `OllamaResponse` object; the final chunk has `done: true` and carries token counts. The `OllamaThink` enum serialises as a bool (`true`) or string (`"high"` / `"medium"` / `"low"`) to match Ollama's `think` field.
 
-**Thinking/reasoning across all providers**: chain-of-thought output (OpenAI `reasoning_content`, Bedrock `ReasoningContent`, Gemini `thought: true`, Ollama `thinking` field) is extracted by each provider's converter and placed in `ModelResponse::thinking`. It is never written into the conversation history and is never re-submitted to the LLM. During streaming, reasoning text arrives as `StreamEvent::ThinkingDelta`.
+**Thinking/reasoning across all providers**: chain-of-thought output (OpenAI `reasoning_content`, Bedrock `ReasoningContent`, Gemini `thought: true`, Ollama `thinking` field) is extracted by each provider's converter and placed in `ModelResponse::thinking`. It is never written into the conversation history and is never re-submitted to the LLM. During streaming, reasoning text arrives as `StreamEvent::ThinkingDelta`. Anthropic is the sole exception, per above: its signed thinking blocks are required history, not just display text.
 
 ## Tool Execution Model
 
@@ -105,10 +108,25 @@ as error `ToolResult`s so the model can recover, not as transport `KovaError`s.
 
 ## InferenceConfig
 
-`InferenceConfig { model, max_tokens, temperature }` controls LLM call parameters. It is stored on `Agent` as a field (set via `AgentBuilder::inference_config(cfg)`) and cloned into each provider call inside the agentic loop. This replaces the earlier pattern of constructing `InferenceConfig::default()` inline on every iteration.
+`InferenceConfig { model, max_tokens, temperature, top_p, stop_sequences, response_format }` controls LLM call parameters. It is stored on `Agent` as a field (set via `AgentBuilder::inference_config(cfg)`) and cloned into each provider call inside the agentic loop. This replaces the earlier pattern of constructing `InferenceConfig::default()` inline on every iteration.
 
 `AgentBuilder` defaults to `InferenceConfig::default()` (all fields `None`), so embedders that do not call `inference_config()` see no behaviour change.
 
+## Structured Output
+
+`response_format: Option<ResponseFormat>` is just another `InferenceConfig` field — it flows through `run`/`run_with_config` like `temperature` does. `Agent::run_structured::<T>(messages, format)` is a thin convenience: it sets the field for one turn and parses the resulting text into `T`, but the constraint itself is applied by the provider, not the agent loop. Each converter maps `ResponseFormat` to its native mechanism (OpenAI `response_format` with `strict: true`, Anthropic `output_config.format`, Gemini `responseMimeType` + a sanitized `responseSchema`, Ollama `format`) rather than kova post-hoc validating JSON — a model that natively enforces the schema fails less often than one asked to and checked after the fact. Bedrock has no equivalent in the Converse API, so it rejects a request that sets `response_format` rather than silently ignoring the constraint.
+
+## Token Counting & Context Budgets
+
+`LlmProvider::count_tokens` defaults to `heuristic_count_tokens` (~4 chars/token plus per-message overhead) so every provider gets a free, offline estimate; Anthropic overrides it with an exact call to `/v1/messages/count_tokens`. The agent's own `context_budget` guard deliberately uses the cheap heuristic on every call rather than a provider's exact counter — an exact count would mean a network round trip before *every* provider call just to decide whether to make one. The heuristic is conservative enough to guard against runaway prompts; call `provider.count_tokens()` directly when a host needs an exact figure (e.g. before a compaction decision).
+
+## Cancellation
+
+`run_cancellable` / `run_stream_cancellable` thread a `CancellationToken` through the loop, raced against the in-flight provider call and each tool execution via `tokio::select!`. A cancellation mid-tool-execution relies on the tool's own future being dropped promptly — for the shell tool this matters because a dropped future must still reap the child process, which is why it's spawned with `kill_on_drop(true)` rather than left to `Drop::drop` on the `Child` handle (which does not by itself kill the process). A cancelled turn returns `KovaError::Cancelled` and produces no messages, so callers never have to reconcile a partial turn against their history.
+
+## Embeddings
+
+`EmbeddingProvider` is deliberately the smallest possible seam: `embed(&[String]) -> Vec<Vec<f32>>` plus an optional `dimensions()`. kova stops there — chunking strategy, indexing, and vector search are all opinionated choices that belong to the host, and baking one in would mean every consumer either fights kova's choice or ignores this part of the crate entirely. `OpenAiEmbeddingProvider` and `OllamaEmbeddingProvider` both re-sort responses by their returned `index` before returning, since providers document order-preservation but not all guarantee it under retries.
 
 ## MCP Integration
 
@@ -125,11 +143,11 @@ Three transports are supported via `McpTransport`: `Stdio` (subprocess), `HttpSs
 
 | Variant | Owner |
 |---------|-------|
-| `Provider`, `Connection`, `Http`, `Timeout` | Provider layer |
+| `Provider`, `Connection`, `Timeout` | Provider layer |
 | `ToolExecution`, `ToolNotFound` | Tool layer |
 | `Mcp` | MCP layer |
 | `Stream` | Streaming layer |
-| `MaxIterations`, `ContextBudgetExceeded` | Agent loop |
+| `MaxIterations`, `ContextBudgetExceeded`, `Cancelled` | Agent loop |
 | `Build` | AgentBuilder validation |
 | `Serialization`, `Io` | Cross-cutting I/O |
 
@@ -154,4 +172,4 @@ The `telemetry` cargo feature gates all OTEL crates. This is a deliberate trade-
 
 `TelemetryConfig::init()` installs either a full OTEL pipeline or a lightweight `tracing_subscriber` depending on the feature flag. The API surface is identical in both cases.
 
-`MetricsCollector` uses atomic integers and a `RwLock<Vec<f64>>` for histograms. It intentionally does not integrate with OTEL metrics — it is a lightweight, always-available introspection tool, not a production metrics pipeline.
+`MetricsCollector` uses atomic integers for counters and a fixed-bucket `RwLock<Histogram>` for latency/duration distributions — constant memory regardless of request volume, unlike a naive `Vec<f64>` of raw samples. It intentionally does not integrate with OTEL metrics — it is a lightweight, always-available introspection tool, not a production metrics pipeline.

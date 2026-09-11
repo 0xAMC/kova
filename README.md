@@ -10,10 +10,10 @@ Async-first Rust library for building LLM-powered agents. Trait-based architectu
 
 ```toml
 [dependencies]
-kova-sdk = "0.1"
+kova-sdk = "0.9"
 
 # With OpenTelemetry tracing
-kova-sdk = { version = "0.1", features = ["telemetry"] }
+kova-sdk = { version = "0.9", features = ["telemetry"] }
 ```
 
 Or with cargo:
@@ -27,7 +27,8 @@ cargo add kova-sdk
 ```
 kova
 ├── agent        # Agent + AgentBuilder — the main orchestration loop
-├── provider     # LlmProvider trait + OpenAI / Bedrock / Gemini / Ollama implementations
+├── provider     # LlmProvider trait + Anthropic / OpenAI / Bedrock / Gemini / Ollama implementations
+├── embedding    # EmbeddingProvider trait + OpenAI / Ollama implementations
 ├── tool         # Tool trait + thread-safe ToolRegistry
 ├── tools        # Built-in fs/shell/web tools (feature `tools` / `web-tools`)
 ├── mcp          # MCP client (stdio / HTTP+SSE / Streamable HTTP + OAuth) + McpTool adapter
@@ -41,12 +42,13 @@ kova
 
 | Provider | Auth | Thinking models |
 |----------|------|-----------------|
+| `AnthropicProvider` | `x-api-key` | On by default (`with_adaptive_thinking(true)`); tune with `with_effort("high")`. Also the only provider with automatic prompt caching and an exact, network-backed `count_tokens` |
 | `OpenAiCompatibleProvider` | Bearer token | `with_reasoning_effort("high")` for o-series models |
 | `BedrockProvider` | SigV4 (explicit / profile / default chain) | `with_additional_model_request_fields(json!({"budgetTokens": N}))` for Claude |
 | `GeminiProvider` | `x-goog-api-key` | `with_thinking_budget(N)` for `gemini-3.5-*` models etc |
 | `OllamaProvider` | None (local) | `with_think(OllamaThink::High)` for `qwen3`, `deepseek-r1`, etc. |
 
-Chain-of-thought output from thinking models is returned in `ModelResponse::thinking` and never stored in conversation history. During streaming it arrives as `AgentEvent::ThinkingDelta`.
+Chain-of-thought output from thinking models is returned in `ModelResponse::thinking` and never stored in conversation history. During streaming it arrives as `AgentEvent::ThinkingDelta`. Anthropic's signed thinking blocks are the exception — they round-trip verbatim in conversation history as `ContentBlock::Thinking`, since the API requires them echoed back unchanged on the next tool-use turn.
 
 ## Quick Start
 
@@ -107,10 +109,37 @@ Transient provider failures (connection errors, timeouts, 408/429/5xx) are retri
 automatically with exponential backoff — default 2 retries, configurable or disableable
 via `AgentBuilder::retry_config(RetryConfig { .. })`.
 
+Two more knobs for production turns:
+
+- **Context budgets** — `AgentBuilder::context_budget(max_prompt_tokens)` checks an offline heuristic before every provider call and fails fast with `KovaError::ContextBudgetExceeded` instead of shipping a request the provider will reject.
+- **Cancellation** — `run_cancellable` / `run_stream_cancellable` take a `CancellationToken` (re-exported in the prelude) and abort mid-provider-call or mid-tool-execution, killing any spawned tool processes, with no partial messages left behind.
+
+## Structured Output & Embeddings
+
+```rust
+use kova_sdk::models::ResponseFormat;
+
+#[derive(serde::Deserialize)]
+struct Route { route: String }
+
+let format = ResponseFormat::named("route", serde_json::json!({
+    "type": "object",
+    "properties": { "route": { "type": "string" } },
+    "required": ["route"],
+    "additionalProperties": false
+}));
+let (route, response) = agent.run_structured::<Route>(&messages, format).await?;
+```
+
+Mapped natively per provider (OpenAI `response_format`, Anthropic `output_config.format`, Gemini `responseSchema`, Ollama `format`); Bedrock has no equivalent and rejects requests that set it.
+
+For retrieval on top of kova, `EmbeddingProvider` gives you `embed(&[String]) -> Vec<Vec<f32>>` via `embedding::openai::OpenAiEmbeddingProvider` or `embedding::ollama::OllamaEmbeddingProvider`. kova ships no vector store — chunking, indexing, and search stay with the host.
+
 ## Feature Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `anthropic` | on | Native Anthropic Messages API provider (streaming, tool use, adaptive thinking, prompt caching) |
 | `openai` | on | OpenAI-compatible provider |
 | `gemini` | on | Google Gemini provider |
 | `ollama` | on | Ollama provider |
@@ -123,7 +152,7 @@ Skip the AWS dependency tree entirely if you don't need Bedrock:
 
 ```toml
 [dependencies]
-kova-sdk = { version = "0.3", default-features = false, features = ["openai"] }
+kova-sdk = { version = "0.9", default-features = false, features = ["anthropic"] }
 ```
 
 Without the `telemetry` feature, `TelemetryConfig::init()` installs a lightweight `tracing_subscriber` — zero OTEL overhead.
@@ -132,7 +161,7 @@ The built-in tools are opt-in to keep the core dependency-light. Enable them and
 
 ```toml
 [dependencies]
-kova-sdk = { version = "0.3", features = ["web-tools"] }
+kova-sdk = { version = "0.9", features = ["web-tools"] }
 ```
 
 ```rust
