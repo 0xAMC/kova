@@ -68,7 +68,7 @@ version = "0.3.23"
 features = ["env-filter"]
 
 [dependencies.tracing-opentelemetry]
-version = "0.33"
+version = "0.34"
 optional = true
 
 [dependencies.opentelemetry]
