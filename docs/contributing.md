@@ -120,3 +120,14 @@ Keep the feature flags in mind when adding new dependencies — OTEL crates, the
 SDK stack, and the web-tool HTML stack are heavy and should not be compiled for
 users who don't need them. Run `cargo test --features web-tools` to exercise the
 tool suite.
+
+## Branching & Releases
+
+`main` is the only long-lived branch. Open PRs against `main`; keep it releasable.
+
+To release: bump `version` in `Cargo.toml` and add a `docs/changelog.md` entry in a
+PR, merge it, then push a tag from `main` — `git tag vX.Y.Z && git push origin vX.Y.Z`.
+The tag triggers `.github/workflows/release.yml`, which publishes to crates.io.
+
+To patch an older line (e.g. a 0.9 fix after 0.10 ships), branch `release/0.9` from
+the latest `v0.9.x` tag, cherry-pick the fix, and tag `v0.9.N` from that branch.
