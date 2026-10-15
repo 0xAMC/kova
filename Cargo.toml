@@ -86,7 +86,7 @@ features = ["grpc-tonic", "http-proto"]
 optional = true
 
 [dependencies.opentelemetry-stdout]
-version = "0.32"
+version = "0.33"
 features = ["trace"]
 optional = true
 
