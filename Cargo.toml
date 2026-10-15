@@ -81,7 +81,7 @@ features = ["rt-tokio", "trace"]
 optional = true
 
 [dependencies.opentelemetry-otlp]
-version = "0.32"
+version = "0.33"
 features = ["grpc-tonic", "http-proto"]
 optional = true
 
