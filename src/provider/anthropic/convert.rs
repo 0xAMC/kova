@@ -7,8 +7,8 @@ use serde_json::json;
 
 use super::config::AnthropicProviderConfig;
 use super::types::{
-    AnthropicRequest, AnthropicResponse, RespBlock, SseBlockStart, SseDelta, SseEvent, WireBlock,
-    WireMessage, WireTool, WireUsage,
+    AnthropicRequest, AnthropicResponse, RespBlock, SseBlockStart, SseDelta, SseError, SseEvent,
+    WireBlock, WireMessage, WireTool, WireUsage,
 };
 use crate::error::KovaError;
 use crate::models::{
@@ -267,12 +267,40 @@ pub(super) fn sse_byte_stream_to_events(
 
     line_stream_to_events(byte_stream, move |line| match parse_sse_line(line) {
         SseLine::Data(data) => match parse_sse_data::<SseEvent>(&data) {
+            Ok(SseEvent::Error { error }) => LineOutcome::Fail(stream_error(error)),
             Ok(event) => LineOutcome::Events(handle_sse_event(&mut state, event)),
             Err(e) => LineOutcome::Fail(e),
         },
         // The Messages API signals completion via `message_stop`, not [DONE].
         SseLine::Done | SseLine::Empty | SseLine::Comment => LineOutcome::Events(Vec::new()),
     })
+}
+
+/// A mid-stream `error` event, classified by the HTTP status its `type`
+/// corresponds to in the API's error table (e.g. `overloaded_error` → 529).
+fn stream_error(error: SseError) -> KovaError {
+    let status = match error.kind.as_str() {
+        "invalid_request_error" => Some(400),
+        "authentication_error" => Some(401),
+        "billing_error" => Some(402),
+        "permission_error" => Some(403),
+        "not_found_error" => Some(404),
+        "conflict_error" => Some(409),
+        "request_too_large" => Some(413),
+        "rate_limit_error" => Some(429),
+        "api_error" => Some(500),
+        "timeout_error" => Some(504),
+        "overloaded_error" => Some(529),
+        _ => None,
+    };
+    match status {
+        Some(status) => KovaError::provider_http(status, None, error.message),
+        None => KovaError::Provider {
+            message: error.message,
+            status_code: None,
+            class: crate::error::ProviderErrorClass::Other,
+        },
+    }
 }
 
 fn handle_sse_event(state: &mut StreamState, event: SseEvent) -> Vec<StreamEvent> {
@@ -373,10 +401,10 @@ fn handle_sse_event(state: &mut StreamState, event: SseEvent) -> Vec<StreamEvent
             }
             events
         }
-        SseEvent::Error { error } => vec![StreamEvent::Error {
-            message: error.message,
-        }],
-        SseEvent::MessageStop | SseEvent::Ping | SseEvent::Other => Vec::new(),
+        // Errors are failed by the line parser before reaching here.
+        SseEvent::Error { .. } | SseEvent::MessageStop | SseEvent::Ping | SseEvent::Other => {
+            Vec::new()
+        }
     }
 }
 
@@ -742,5 +770,17 @@ mod tests {
         assert_eq!(oc["effort"], "high");
         assert_eq!(oc["format"]["type"], "json_schema");
         assert_eq!(oc["format"]["schema"]["type"], "object");
+    }
+
+    #[tokio::test]
+    async fn stream_error_event_is_classified_by_type() {
+        let body = "event: error\ndata: {\"type\": \"error\", \"error\": {\"type\": \"overloaded_error\", \"message\": \"Overloaded\"}}\n\n";
+        let err = crate::streaming::line_stream::tests::first_stream_error(
+            |s| sse_byte_stream_to_events(s),
+            body,
+        )
+        .await;
+        assert_eq!(err.status_code(), Some(529));
+        assert!(err.provider_class().is_some_and(|c| c.is_retryable()));
     }
 }

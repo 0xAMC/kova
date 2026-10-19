@@ -9,7 +9,7 @@ use futures::future::join_all;
 use tokio::sync::Semaphore;
 use tracing::Instrument;
 
-use crate::error::KovaError;
+use crate::error::{KovaError, ProviderErrorClass};
 use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, ResponseFormat, Role,
     StopReason, StreamEvent, ToolDefinition, UsageStats,
@@ -343,7 +343,11 @@ impl Agent {
                                 if let Some(m) = &self.metrics {
                                     m.record_llm_error();
                                 }
-                                Err(KovaError::Stream(message.clone()))?;
+                                Err(KovaError::Provider {
+                                    message: message.clone(),
+                                    status_code: None,
+                                    class: ProviderErrorClass::Other,
+                                })?;
                             }
                         },
                         Err(e) => {

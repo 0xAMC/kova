@@ -199,6 +199,8 @@ pub(super) struct SseOutputUsage {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct SseError {
+    #[serde(rename = "type", default)]
+    pub kind: String,
     #[serde(default)]
     pub message: String,
 }

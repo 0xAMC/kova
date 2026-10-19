@@ -21,7 +21,7 @@ use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
     StreamEvent, ToolDefinition, UsageStats,
 };
-use crate::streaming::line_stream::{LineOutcome, line_stream_to_events};
+use crate::streaming::line_stream::{LineOutcome, error_envelope, line_stream_to_events};
 use crate::streaming::sse::{SseLine, parse_sse_data, parse_sse_line};
 
 // ── Tool-parameter schema sanitisation ─────────────────────────────
@@ -508,9 +508,12 @@ pub(crate) fn sse_byte_stream_to_events(
 ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>> {
     line_stream_to_events(byte_stream, |line| match parse_sse_line(line) {
         SseLine::Done => LineOutcome::Done,
-        SseLine::Data(data) => match parse_sse_data::<GeminiResponse>(&data) {
-            Ok(chunk) => LineOutcome::Events(format_stream_events(chunk)),
-            Err(e) => LineOutcome::Fail(e),
+        SseLine::Data(data) => match error_envelope(&data) {
+            Some(e) => LineOutcome::Fail(e),
+            None => match parse_sse_data::<GeminiResponse>(&data) {
+                Ok(chunk) => LineOutcome::Events(format_stream_events(chunk)),
+                Err(e) => LineOutcome::Fail(e),
+            },
         },
         SseLine::Empty | SseLine::Comment => LineOutcome::Events(Vec::new()),
     })
@@ -1266,5 +1269,19 @@ mod tests {
 
         let req = format_request(&[user_msg("hi")], &[], &InferenceConfig::default(), None);
         assert!(req.generation_config.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_error_chunk_is_not_swallowed() {
+        // `GeminiResponse` has only defaulted fields, so without the envelope
+        // check this chunk would decode as an empty response.
+        let body = "data: {\"error\":{\"code\":429,\"message\":\"Resource exhausted\",\"status\":\"RESOURCE_EXHAUSTED\"}}\n\n";
+        let err = crate::streaming::line_stream::tests::first_stream_error(
+            |s| sse_byte_stream_to_events(s),
+            body,
+        )
+        .await;
+        assert_eq!(err.status_code(), Some(429));
+        assert!(err.to_string().contains("Resource exhausted"));
     }
 }
