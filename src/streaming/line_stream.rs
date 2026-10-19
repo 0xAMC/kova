@@ -110,8 +110,28 @@ where
     }))
 }
 
+/// Decode an error envelope written into an otherwise-successful (HTTP 200)
+/// stream. Callers check this before the typed parse: Gemini's all-optional
+/// response type would otherwise accept `{"error": ...}` as an empty chunk.
+#[cfg(any(feature = "openai", feature = "gemini", feature = "ollama"))]
+pub(crate) fn error_envelope(line: &str) -> Option<KovaError> {
+    // Cheap pre-filter so ordinary chunks are not parsed twice.
+    if !line.contains("\"error\"") {
+        return None;
+    }
+    let (message, status) = crate::provider::http::parse_error_body(line)?;
+    Some(match status {
+        Some(status) => KovaError::provider_http(status, None, message),
+        None => KovaError::Provider {
+            message,
+            status_code: None,
+            class: crate::error::ProviderErrorClass::Other,
+        },
+    })
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::models::StreamEvent;
 
@@ -193,5 +213,91 @@ mod tests {
         });
         let first = stream.next().await.unwrap();
         assert!(matches!(first, Err(KovaError::Stream(m)) if m == "boom"));
+    }
+
+    // ── error_envelope ─────────────────────────────────────────────
+
+    #[test]
+    fn error_envelope_lm_studio() {
+        // Captured from LM Studio 0.3.x: HTTP 200, `event: error`.
+        let line = r#"{"error":{"message":"n_keep: 6068>= n_ctx: 3328"},"message":"n_keep: 6068>= n_ctx: 3328"}"#;
+        match error_envelope(line).expect("envelope") {
+            KovaError::Provider {
+                message,
+                status_code,
+                class,
+            } => {
+                assert_eq!(message, "n_keep: 6068>= n_ctx: 3328");
+                assert_eq!(status_code, None);
+                assert_eq!(class, crate::error::ProviderErrorClass::Other);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn error_envelope_openai_string_code_is_unclassified() {
+        let line = r#"{"error":{"message":"boom","type":"server_error","param":null,"code":"context_length_exceeded"}}"#;
+        let err = error_envelope(line).expect("envelope");
+        assert_eq!(err.status_code(), None);
+        assert!(err.to_string().contains("boom"));
+    }
+
+    #[test]
+    fn error_envelope_llama_cpp_numeric_code() {
+        let line =
+            r#"{"error":{"code":400,"message":"too long","type":"exceed_context_size_error"}}"#;
+        let err = error_envelope(line).expect("envelope");
+        assert_eq!(err.status_code(), Some(400));
+        assert_eq!(
+            err.provider_class(),
+            Some(&crate::error::ProviderErrorClass::InvalidRequest)
+        );
+    }
+
+    #[test]
+    fn error_envelope_gemini_numeric_code() {
+        let line = r#"{"error":{"code":429,"message":"quota","status":"RESOURCE_EXHAUSTED"}}"#;
+        let err = error_envelope(line).expect("envelope");
+        assert_eq!(err.status_code(), Some(429));
+        assert!(err.provider_class().is_some_and(|c| c.is_retryable()));
+    }
+
+    #[test]
+    fn error_envelope_ollama_string_with_status() {
+        let err = error_envelope(r#"{"error":"model not loaded"}"#).expect("envelope");
+        assert_eq!(err.status_code(), None);
+        assert!(err.to_string().contains("model not loaded"));
+        let err = error_envelope(r#"{"error":"overloaded","status":503}"#).expect("envelope");
+        assert_eq!(err.status_code(), Some(503));
+    }
+
+    #[test]
+    fn error_envelope_ignores_non_errors() {
+        assert!(error_envelope(r#"{"id":"1","choices":[]}"#).is_none());
+        assert!(
+            error_envelope(r#"{"choices":[{"delta":{"content":"the \"error\" word"}}]}"#).is_none()
+        );
+        assert!(error_envelope("not json").is_none());
+        assert!(error_envelope(r#"{"error":null}"#).is_none());
+        assert!(error_envelope(r#"{"error":{"code":500}}"#).is_none());
+    }
+
+    /// Run `body` through a provider adapter and return the first error.
+    pub(crate) async fn first_stream_error(
+        adapter: impl FnOnce(
+            futures::stream::Iter<std::vec::IntoIter<Result<Bytes, reqwest::Error>>>,
+        )
+            -> Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>>,
+        body: &'static str,
+    ) -> KovaError {
+        let chunks = vec![Ok(Bytes::from_static(body.as_bytes()))];
+        let mut stream = adapter(futures::stream::iter(chunks));
+        while let Some(item) = stream.next().await {
+            if let Err(e) = item {
+                return e;
+            }
+        }
+        panic!("stream ended without an error");
     }
 }

@@ -658,3 +658,18 @@ fn kova_schema() -> crate::models::ResponseFormat {
         serde_json::json!({"type": "object", "properties": {"route": {"type": "string"}}}),
     )
 }
+
+#[tokio::test]
+async fn stream_error_event_from_lm_studio_surfaces_message() {
+    // Verbatim LM Studio output for a prompt longer than the loaded context.
+    let body = "event: error\ndata: {\"error\":{\"message\":\"The number of tokens to keep from the initial prompt is greater than the context length (n_keep: 6068>= n_ctx: 3328).\"},\"message\":\"The number of tokens to keep from the initial prompt is greater than the context length (n_keep: 6068>= n_ctx: 3328).\"}\n\n";
+    let err = crate::streaming::line_stream::tests::first_stream_error(
+        |s| sse_byte_stream_to_events(s),
+        body,
+    )
+    .await;
+    match err {
+        KovaError::Provider { message, .. } => assert!(message.starts_with("The number of tokens")),
+        other => panic!("unexpected {other:?}"),
+    }
+}

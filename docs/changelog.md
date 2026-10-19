@@ -2,6 +2,49 @@
 
 All notable changes to the `kova-sdk` library are documented here.
 
+## 0.10.0 — Mid-stream provider errors surface as classified errors
+
+### Fixed
+- **Error envelopes inside HTTP-200 streams are no longer swallowed or misreported.** Providers sometimes write an error into an otherwise-successful stream (a context overflow in LM Studio, a quota error from Gemini, a crashed llama runner in Ollama). The OpenAI-compatible, Gemini, and Ollama stream adapters now detect `{"error": ...}` payloads before the typed parse and fail the stream with the provider's message. Gemini was the worst case: its all-optional response type accepted an error chunk as an empty response, so the turn silently ended with no text.
+- **Anthropic mid-stream `error` events are classified.** The error `type` maps to the HTTP status the API documents for it (`overloaded_error` → 529, `rate_limit_error` → 429, `invalid_request_error` → 400, …), so `is_retryable()` and `provider_class()` behave the same as for a failed HTTP response.
+- **Non-streaming HTTP error bodies are unwrapped.** `KovaError::Provider::message` now holds the provider's error message instead of the raw JSON body. Recognised shapes: `{"error": {"message", "code"?}}` (OpenAI, LM Studio, llama.cpp, Gemini), Anthropic's `{"type": "error", "error": {..}}`, and Ollama's `{"error": "<text>", "status"?}`. Unrecognised bodies are kept verbatim, as before.
+- SSE parse failures (`KovaError::Stream("SSE parse error: …")`) now include the first 200 characters of the offending payload, so the failure can be diagnosed.
+
+### Changed (behavior)
+- Stream errors reported by the provider now reach callers as `KovaError::Provider { class, status_code, .. }` instead of `KovaError::Stream`. This applies to `run_stream` and to the `StreamEvent::Error` path in the agent loop. The class is derived from a numeric status when the payload carries one and is `ProviderErrorClass::Other` otherwise. `KovaError::Stream` is now reserved for transport/framing failures (malformed SSE/NDJSON, broken byte stream). Callers that matched on `Stream` to detect provider failures should match `Provider`.
+- The Anthropic adapter no longer emits `StreamEvent::Error`; an `error` event ends the stream with an `Err` item instead.
+
+### Notes
+- Repository moved to trunk-based branching: `development` is gone, CI and Dependabot target `main`, and releases are cut from tags on `main` (with `release/x.y` branches for backports). See docs/contributing.md.
+
+## 0.9.3 — Security dependency updates
+
+### Security
+- Refreshed `Cargo.lock` to pick up patched transitive dependencies, including the AWS SDK stack (`aws-sdk-*`, `aws-smithy-*`, `aws-sigv4`), `hyper-util` / `hyper-rustls`, `rustls`, `quinn`, `thiserror` 2.0.21, and `zerocopy`. Dropped the stale `http` 0.2 / `http-body` 0.4 duplicates.
+
+### Notes
+- No API or behavior changes.
+
+## 0.9.2 — Dependency bumps + docs refresh
+
+### Changed
+- Dependency updates: `aws-config` 1.12, `aws-credential-types` 1.3, `async-trait` 0.1.92, `thiserror` 2.0.20, plus the transitive AWS SDK / smithy refresh.
+
+### Docs
+- README, `docs/api-reference.md`, `docs/design.md`, and `docs/contributing.md` updated for the 0.9 stateless core. This adds per-provider config tables (OpenAI-compatible, Anthropic) and documents Anthropic's native `count_tokens`.
+
+### Notes
+- No API or behavior changes.
+
+## 0.9.1 — Dependency bumps
+
+### Changed
+- `aws-smithy-eventstream` requirement raised from `0.60.20` to `0.61.1` (Bedrock streaming).
+- Dependency updates: `bytes` 1.12, `aws-config` 1.9, `aws-credential-types` 1.3, `aws-smithy-runtime-api` 1.13, plus a general `Cargo.lock` refresh.
+
+### Notes
+- No API or behavior changes.
+
 ## 0.9.0 — Stateless core: memory, orchestrator, and push-streaming removed
 
 ### Removed (breaking)

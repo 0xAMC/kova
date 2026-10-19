@@ -13,7 +13,7 @@ use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelInfo, ModelResponse, Role, StopReason,
     StreamEvent, ToolDefinition, UsageStats,
 };
-use crate::streaming::line_stream::{LineOutcome, line_stream_to_events};
+use crate::streaming::line_stream::{LineOutcome, error_envelope, line_stream_to_events};
 
 static TOOL_CALL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -350,6 +350,9 @@ pub(crate) fn ndjson_byte_stream_to_events(
         let line = line.trim();
         if line.is_empty() {
             return LineOutcome::Events(Vec::new());
+        }
+        if let Some(e) = error_envelope(line) {
+            return LineOutcome::Fail(e);
         }
         match serde_json::from_str::<OllamaResponse>(line) {
             Ok(resp) => LineOutcome::Events(format_stream_chunk(resp)),
@@ -783,5 +786,21 @@ mod tests {
             false,
         );
         assert!(req.format.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_error_line_surfaces_message() {
+        let body = "{\"model\":\"m\",\"message\":{\"role\":\"assistant\",\"content\":\"Hi\"},\"done\":false}\n{\"error\":\"llama runner process has terminated\"}\n";
+        let err = crate::streaming::line_stream::tests::first_stream_error(
+            |s| ndjson_byte_stream_to_events(s),
+            body,
+        )
+        .await;
+        match err {
+            KovaError::Provider { message, .. } => {
+                assert_eq!(message, "llama runner process has terminated")
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }

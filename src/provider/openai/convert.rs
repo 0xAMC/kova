@@ -12,7 +12,7 @@ use crate::models::{
     ContentBlock, ConversationMessage, InferenceConfig, ModelResponse, Role, StopReason,
     StreamEvent, ToolDefinition, UsageStats,
 };
-use crate::streaming::line_stream::{LineOutcome, line_stream_to_events};
+use crate::streaming::line_stream::{LineOutcome, error_envelope, line_stream_to_events};
 use crate::streaming::sse::{SseLine, parse_sse_data, parse_sse_line};
 
 // ── Request formatting ─────────────────────────────────────────────
@@ -283,9 +283,12 @@ pub(crate) fn sse_byte_stream_to_events(
 ) -> Pin<Box<dyn Stream<Item = Result<StreamEvent, KovaError>> + Send>> {
     line_stream_to_events(byte_stream, |line| match parse_sse_line(line) {
         SseLine::Done => LineOutcome::Done,
-        SseLine::Data(data) => match parse_sse_data::<OaiResponseChunk>(&data) {
-            Ok(chunk) => LineOutcome::Events(format_stream_event(chunk)),
-            Err(e) => LineOutcome::Fail(e),
+        SseLine::Data(data) => match error_envelope(&data) {
+            Some(e) => LineOutcome::Fail(e),
+            None => match parse_sse_data::<OaiResponseChunk>(&data) {
+                Ok(chunk) => LineOutcome::Events(format_stream_event(chunk)),
+                Err(e) => LineOutcome::Fail(e),
+            },
         },
         SseLine::Empty | SseLine::Comment => LineOutcome::Events(Vec::new()),
     })

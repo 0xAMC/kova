@@ -28,5 +28,27 @@ pub(crate) async fn error_from_response(response: reqwest::Response) -> KovaErro
         .and_then(|v| v.trim().parse::<u64>().ok())
         .map(Duration::from_secs);
     let body = response.text().await.unwrap_or_default();
-    KovaError::provider_http(status, retry_after, body)
+    let message = parse_error_body(&body).map_or(body, |(message, _)| message);
+    KovaError::provider_http(status, retry_after, message)
+}
+
+/// Message and HTTP-equivalent status from a provider error body.
+///
+/// Covers the shapes providers actually send: `{"error": {"message", "code"?}}`
+/// (OpenAI, LM Studio, llama.cpp, Gemini — Gemini/llama.cpp put the status in a
+/// numeric `code`; OpenAI's `code` is a string), `{"type": "error", "error":
+/// {..}}` (Anthropic), and `{"error": "<text>", "status"?: <int>}` (Ollama).
+pub(crate) fn parse_error_body(body: &str) -> Option<(String, Option<u16>)> {
+    use serde_json::Value;
+    let value: Value = serde_json::from_str(body).ok()?;
+    let (message, code) = match value.get("error")? {
+        Value::String(message) => (message.clone(), value.get("status")),
+        Value::Object(obj) => (obj.get("message")?.as_str()?.to_string(), obj.get("code")),
+        _ => return None,
+    };
+    let status = code
+        .and_then(Value::as_u64)
+        .and_then(|c| u16::try_from(c).ok())
+        .filter(|c| (400..600).contains(c));
+    Some((message, status))
 }

@@ -54,9 +54,21 @@ pub(crate) fn parse_sse_line(line: &str) -> SseLine {
 
 /// Deserialize a JSON string from an SSE `data:` payload into the target type.
 ///
-/// Returns `KovaError::Stream` if the JSON is malformed or doesn't match `T`.
+/// Returns `KovaError::Stream` if the JSON is malformed or doesn't match `T`;
+/// the message carries the head of the payload so the failure is diagnosable.
 pub(crate) fn parse_sse_data<T: DeserializeOwned>(data: &str) -> Result<T, KovaError> {
-    serde_json::from_str(data).map_err(|e| KovaError::Stream(format!("SSE parse error: {e}")))
+    const SNIPPET_CHARS: usize = 200;
+    serde_json::from_str(data).map_err(|e| {
+        let snippet: String = data.chars().take(SNIPPET_CHARS).collect();
+        let ellipsis = if data.chars().nth(SNIPPET_CHARS).is_some() {
+            "…"
+        } else {
+            ""
+        };
+        KovaError::Stream(format!(
+            "SSE parse error: {e}; payload: {snippet}{ellipsis}"
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -194,6 +206,7 @@ mod tests {
         match err {
             KovaError::Stream(msg) => {
                 assert!(msg.contains("SSE parse error"));
+                assert!(msg.contains("payload: not json"));
             }
             other => panic!("Expected Stream error, got {:?}", other),
         }
