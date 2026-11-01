@@ -1,14 +1,16 @@
-//! Network tools: `fetch_webpage` and `web_search`.
+//! Network tooling: the `fetch_webpage` tool and the [`fetch_text`] /
+//! [`fetch_text_with_headers`] helpers for building other network tools.
 //!
 //! # SSRF defense
 //!
-//! Both tools resolve the target host themselves and reject any hostname that
-//! resolves to a loopback, private, link-local, or otherwise internal address
-//! (unless [`WebPolicy::allow_private_hosts`] is set). The HTTP client is then
-//! *pinned* to the already-validated IP, so a second DNS lookup cannot be
-//! rebound to an internal address between the check and the connection (a DNS
-//! rebinding attack). Redirects are followed manually, re-running every
-//! guardrail on each hop.
+//! The tool and the helpers resolve the target host themselves and reject any
+//! hostname that resolves to a loopback, private, link-local, or otherwise
+//! internal address (unless [`WebPolicy::allow_private_hosts`] is set). The HTTP
+//! client is then *pinned* to the already-validated IP, so a second DNS lookup
+//! cannot be rebound to an internal address between the check and the
+//! connection (a DNS rebinding attack). `fetch_webpage` follows redirects
+//! manually, re-running every guardrail on each hop; the helpers do not follow
+//! redirects.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::time::Duration;

@@ -37,7 +37,8 @@ pub struct ToolPolicy {
     pub protected_paths: Vec<PathBuf>,
     /// Wall-clock limit for one `shell` invocation; the child is killed on expiry.
     pub shell_timeout: Duration,
-    /// Guardrails for the network-facing tools (`fetch_webpage`, `web_search`).
+    /// Guardrails for the network-facing tools (`fetch_webpage` and anything
+    /// built on `fetch_text`).
     pub web: WebPolicy,
 }
 
